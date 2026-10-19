@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #12100e;
+    background-image:
+      radial-gradient(circle at 50% 0%, rgba(212, 163, 89, 0.07) 0%, transparent 65%),
+      radial-gradient(circle at 85% 90%, rgba(200, 50, 40, 0.05) 0%, transparent 55%);
+    color: #f4efe6;
+    font-family: 'DM Sans', system-ui, sans-serif;
+    overflow-x: hidden;
+  }
+
+  h1, h2, h3, .font-serif-vintage, .font-woodcut {
+    font-family: 'Germania One', Georgia, serif;
+    letter-spacing: 0.04em;
+  }
+
+  .font-mono-numbers {
+    font-family: 'Space Mono', monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.woodcut-title-shadow {
+  text-shadow:
+    2px 2px 0px #2b231d,
+    4px 4px 0px #1a1512,
+    6px 6px 0px #c83228;
+}
+
+.tactile-card-shadow {
+  box-shadow: 0 4px 0 0 rgba(0, 0, 0, 0.55), 0 10px 24px -4px rgba(0, 0, 0, 0.6);
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #171412;
+}
+::-webkit-scrollbar-thumb {
+  background: #362e28;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #4f433a;
+}
