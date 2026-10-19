@@ -1,17 +1,19 @@
 import { GameEngine } from '../src/game/GameEngine.js';
-import { NightInfo, Vote } from '../src/game/types.js';
+import { HitlerSuspenseCheck, NightInfo, Vote } from '../src/game/types.js';
 
 export interface RoomPlayer {
   id: string;
   name: string;
   socketId: string;
   isBot?: boolean;
+  connected?: boolean;
 }
 
 export interface RoomSpectator {
   id: string;
   name: string;
   socketId: string;
+  connected?: boolean;
 }
 
 export class Room {
@@ -21,15 +23,46 @@ export class Room {
   spectators: RoomSpectator[] = [];
   game: GameEngine | null = null;
   started = false;
+  isPrivate = false;
+  createdAt: number;
+  updatedAt: number;
+  revision = 1;
+  lastHitlerCheck: { id: string; check: HitlerSuspenseCheck } | null = null;
 
-  constructor(hostId: string, hostName: string, socketId?: string) {
-    this.code = this.generateCode();
+  constructor(
+    hostId: string,
+    hostName: string,
+    socketId?: string,
+    existingCode?: string,
+    isPrivate = false
+  ) {
+    this.code = existingCode || this.generateCode();
     this.hostId = hostId;
-    this.players.push({
-      id: hostId,
-      name: hostName.trim() || 'Player 1',
-      socketId: socketId || hostId,
-    });
+    this.isPrivate = Boolean(isPrivate);
+    this.createdAt = Date.now();
+    this.updatedAt = Date.now();
+    if (hostId) {
+      this.players.push({
+        id: hostId,
+        name: hostName.trim() || 'Player 1',
+        socketId: socketId || hostId,
+        connected: true,
+      });
+    }
+  }
+
+  touch() {
+    this.updatedAt = Date.now();
+    this.revision++;
+  }
+
+  RecordHitlerCheck(check?: HitlerSuspenseCheck) {
+    if (check) {
+      this.lastHitlerCheck = {
+        id: `hc_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        check,
+      };
+    }
   }
 
   generateCode(): string {
@@ -41,11 +74,18 @@ export class Room {
     return code;
   }
 
-  setPlayerSocketId(playerId: string, socketId: string) {
+  setPlayerSocketId(playerId: string, socketId: string, connected = true) {
     const player = this.players.find((p) => p.id === playerId);
-    if (player) player.socketId = socketId;
+    if (player) {
+      if (socketId) player.socketId = socketId;
+      player.connected = connected;
+    }
     const spec = this.spectators.find((s) => s.id === playerId);
-    if (spec) spec.socketId = socketId;
+    if (spec) {
+      if (socketId) spec.socketId = socketId;
+      spec.connected = connected;
+    }
+    this.touch();
   }
 
   getPlayerList() {
@@ -54,6 +94,7 @@ export class Room {
       name: p.name,
       isHost: p.id === this.hostId,
       isBot: p.isBot || false,
+      connected: p.isBot ? true : p.connected !== false,
     }));
   }
 
@@ -67,16 +108,75 @@ export class Room {
   addPlayer(
     id: string,
     name: string,
-    socketId?: string
-  ): { success: boolean; isSpectator?: boolean; error?: string } {
-    const cleanName = name.trim();
+    socketId?: string,
+    claimPlayerId?: string
+  ): {
+    success: boolean;
+    playerId?: string;
+    isHost?: boolean;
+    isSpectator?: boolean;
+    reconnected?: boolean;
+    error?: string;
+  } {
+    // 1. Check if claiming an explicit player seat by ID
+    if (claimPlayerId) {
+      const target = this.players.find((p) => p.id === claimPlayerId && !p.isBot);
+      if (target) {
+        if (socketId) target.socketId = socketId;
+        target.connected = true;
+        this.touch();
+        return {
+          success: true,
+          playerId: target.id,
+          isHost: target.id === this.hostId,
+          isSpectator: false,
+          reconnected: true,
+        };
+      }
+    }
+
+    const cleanName = (name || '').trim();
     if (!cleanName) {
       return { success: false, error: 'Please enter your name' };
     }
 
-    // If game is already in progress, join as Spectator!
+    // 2. If a human player with this exact name (or ID) is already seated in the room,
+    // seamlessly reconnect/sync them to their seat instead of rejecting!
+    const existingHuman = this.players.find(
+      (p) => !p.isBot && (p.id === id || p.name.toLowerCase() === cleanName.toLowerCase())
+    );
+    if (existingHuman) {
+      if (socketId) existingHuman.socketId = socketId;
+      existingHuman.connected = true;
+      this.touch();
+      return {
+        success: true,
+        playerId: existingHuman.id,
+        isHost: existingHuman.id === this.hostId,
+        isSpectator: false,
+        reconnected: true,
+      };
+    }
+
+    // 3. Check if already in spectators with same name/id
+    const existingSpec = this.spectators.find(
+      (s) => s.id === id || s.name.toLowerCase() === cleanName.toLowerCase()
+    );
+    if (existingSpec && this.started) {
+      if (socketId) existingSpec.socketId = socketId;
+      existingSpec.connected = true;
+      this.touch();
+      return {
+        success: true,
+        playerId: existingSpec.id,
+        isHost: false,
+        isSpectator: true,
+        reconnected: true,
+      };
+    }
+
+    // 4. If game is already in progress, join as Spectator!
     if (this.started) {
-      // Ensure unique spectator name
       let finalName = cleanName;
       if (
         this.players.some((p) => p.name.toLowerCase() === finalName.toLowerCase()) ||
@@ -88,31 +188,42 @@ export class Room {
         id,
         name: finalName,
         socketId: socketId || id,
+        connected: true,
       });
-      return { success: true, isSpectator: true };
+      this.touch();
+      return { success: true, playerId: id, isHost: false, isSpectator: true };
     }
 
     if (this.players.length >= 10) {
-      // If lobby is full (10 players), also allow joining as Spectator!
       this.spectators.push({
         id,
         name: cleanName,
         socketId: socketId || id,
+        connected: true,
       });
-      return { success: true, isSpectator: true };
+      this.touch();
+      return { success: true, playerId: id, isHost: false, isSpectator: true };
     }
 
-    if (this.players.some((p) => p.name.toLowerCase() === cleanName.toLowerCase())) {
-      return { success: false, error: 'Someone with that name is already in the room' };
+    // Check if a bot has the same name; if so, rename the bot or append number
+    if (this.players.some((p) => p.isBot && p.name.toLowerCase() === cleanName.toLowerCase())) {
+      const botMatch = this.players.find(
+        (p) => p.isBot && p.name.toLowerCase() === cleanName.toLowerCase()
+      );
+      if (botMatch) {
+        botMatch.name = `${botMatch.name} (Bot)`;
+      }
     }
 
     this.players.push({
       id,
       name: cleanName,
       socketId: socketId || id,
+      connected: true,
     });
+    this.touch();
 
-    return { success: true, isSpectator: false };
+    return { success: true, playerId: id, isHost: id === this.hostId, isSpectator: false };
   }
 
   addBot(): { success: boolean; bot?: RoomPlayer; error?: string } {
@@ -142,8 +253,10 @@ export class Room {
       name: chosenName,
       socketId: botId,
       isBot: true,
+      connected: true,
     };
     this.players.push(bot);
+    this.touch();
     return { success: true, bot };
   }
 
@@ -151,15 +264,76 @@ export class Room {
     const idx = this.players.findIndex((p) => p.id === botId && p.isBot);
     if (idx !== -1) {
       this.players.splice(idx, 1);
+      this.touch();
       return true;
     }
     return false;
+  }
+
+  kickPlayer(
+    hostId: string,
+    targetPlayerId: string
+  ): {
+    success: boolean;
+    removedPlayer?: {
+      id: string;
+      name: string;
+      socketId: string;
+      isBot?: boolean;
+      isSpectator?: boolean;
+    };
+    error?: string;
+  } {
+    if (this.hostId !== hostId) {
+      return { success: false, error: 'Only the room host can remove players' };
+    }
+    if (this.started) {
+      return { success: false, error: 'Cannot remove players after the game has started' };
+    }
+    if (targetPlayerId === this.hostId) {
+      return { success: false, error: 'Host cannot remove themselves' };
+    }
+
+    const playerIdx = this.players.findIndex((p) => p.id === targetPlayerId);
+    if (playerIdx !== -1) {
+      const [removed] = this.players.splice(playerIdx, 1);
+      this.touch();
+      return {
+        success: true,
+        removedPlayer: {
+          id: removed.id,
+          name: removed.name,
+          socketId: removed.socketId,
+          isBot: removed.isBot,
+          isSpectator: false,
+        },
+      };
+    }
+
+    const specIdx = this.spectators.findIndex((s) => s.id === targetPlayerId);
+    if (specIdx !== -1) {
+      const [removedSpec] = this.spectators.splice(specIdx, 1);
+      this.touch();
+      return {
+        success: true,
+        removedPlayer: {
+          id: removedSpec.id,
+          name: removedSpec.name,
+          socketId: removedSpec.socketId,
+          isBot: false,
+          isSpectator: true,
+        },
+      };
+    }
+
+    return { success: false, error: 'Player not found in room' };
   }
 
   removePlayer(id: string): { remaining: number; wasHost: boolean; wasSpectator: boolean } {
     const specIdx = this.spectators.findIndex((s) => s.id === id);
     if (specIdx !== -1) {
       this.spectators.splice(specIdx, 1);
+      this.touch();
       return { remaining: this.players.length, wasHost: false, wasSpectator: true };
     }
 
@@ -174,6 +348,7 @@ export class Room {
       this.hostId = nextHuman ? nextHuman.id : this.players[0].id;
     }
 
+    this.touch();
     return { remaining: this.players.length, wasHost, wasSpectator: false };
   }
 
@@ -200,6 +375,8 @@ export class Room {
     if (!res.success) return res;
 
     this.started = true;
+    this.lastHitlerCheck = null;
+    this.touch();
 
     const nightInfo: Record<string, NightInfo> = {};
     for (const p of this.players) {
@@ -208,6 +385,131 @@ export class Room {
     }
 
     return { success: true, nightInfo };
+  }
+
+  getSummary() {
+    const hostPlayer = this.players.find((p) => p.id === this.hostId) || this.players[0];
+    return {
+      roomCode: this.code,
+      hostName: hostPlayer ? hostPlayer.name : 'Host',
+      playerCount: this.players.length,
+      humanCount: this.players.filter((p) => !p.isBot).length,
+      botCount: this.players.filter((p) => p.isBot).length,
+      spectatorCount: this.spectators.length,
+      started: this.started,
+      isPrivate: this.isPrivate,
+      phase: this.game ? this.game.phase : 'LOBBY',
+      roundNumber: this.game ? this.game.roundNumber : 0,
+      liberalPolicies: this.game ? this.game.liberalPolicies : 0,
+      fascistPolicies: this.game ? this.game.fascistPolicies : 0,
+      createdAt: this.createdAt,
+      updatedAt: this.updatedAt,
+      revision: this.revision,
+      liveUrl: `/live/${this.code}`,
+      players: this.getPlayerList(),
+    };
+  }
+
+  getLiveSnapshot(forPlayerId?: string) {
+    const publicState = this.game ? this.game.getPublicState() : null;
+    const isPlayer = forPlayerId ? this.players.some((p) => p.id === forPlayerId) : false;
+    const isSpec = forPlayerId ? this.spectators.some((s) => s.id === forPlayerId) : false;
+
+    let nightInfo: NightInfo | null = null;
+    let presidentCards = null;
+    let chancellorCards = null;
+    let canVeto = false;
+    let peekCards = null;
+    let investigationResult = null;
+
+    if (this.game && forPlayerId && isPlayer) {
+      nightInfo = this.game.getNightInfoForPlayer(forPlayerId);
+      const currentPres = this.game.players[this.game.presidentIndex];
+      const currentChan =
+        this.game.chancellorIndex !== null
+          ? this.game.players[this.game.chancellorIndex]
+          : null;
+
+      if (this.game.phase === 'LEGISLATIVE_PRESIDENT' && currentPres?.id === forPlayerId) {
+        presidentCards = [...this.game.currentPresidentCards];
+      }
+      if (this.game.phase === 'LEGISLATIVE_CHANCELLOR' && currentChan?.id === forPlayerId) {
+        chancellorCards = [...this.game.currentChancellorCards];
+        canVeto = this.game.fascistPolicies >= 5 && !this.game.vetoUsedThisRound;
+      }
+      if (
+        this.game.phase === 'EXECUTIVE_ACTION' &&
+        this.game.executiveAction === 'PEEK' &&
+        currentPres?.id === forPlayerId
+      ) {
+        const peek = this.game.getPeekCards(forPlayerId);
+        if (peek.cards) peekCards = peek.cards;
+      }
+      if (
+        this.game.phase === 'EXECUTIVE_ACTION' &&
+        this.game.executiveAction === 'INVESTIGATE' &&
+        currentPres?.id === forPlayerId &&
+        this.game.lastInvestigationResult
+      ) {
+        investigationResult = this.game.lastInvestigationResult;
+      }
+    }
+
+    let voteProgress: { votesIn: number; votesNeeded: number } | null = null;
+    if (this.game && this.game.phase === 'VOTING') {
+      const aliveCount = this.game.players.filter((p) => p.isAlive).length;
+      const votesIn = Object.keys(this.game.votes).length;
+      voteProgress = { votesIn, votesNeeded: aliveCount };
+    }
+
+    let gameOverData = null;
+    if (this.game && this.game.phase === 'GAME_OVER' && this.game.winner) {
+      gameOverData = {
+        winner: this.game.winner,
+        winReason: this.game.winReason || '',
+        roles: this.game.getAllRoles(),
+      };
+    }
+
+    let lastElectionVotes = null;
+    if (this.game && Object.keys(this.game.lastRevealedVotes).length > 0) {
+      lastElectionVotes = {
+        votes: { ...this.game.lastRevealedVotes },
+        passed: Boolean(this.game.lastVotePassed),
+      };
+    }
+
+    return {
+      success: true,
+      roomCode: this.code,
+      liveUrl: `/live/${this.code}`,
+      revision: this.revision,
+      updatedAt: this.updatedAt,
+      started: this.started,
+      isPrivate: this.isPrivate,
+      hostId: this.hostId,
+      isHost: Boolean(forPlayerId && forPlayerId === this.hostId),
+      isSpectator: isSpec,
+      isSeatedPlayer: isPlayer,
+      players: this.getPlayerList(),
+      spectators: this.getSpectatorList(),
+      gameState: publicState,
+      voteProgress,
+      lastElectionVotes,
+      lastHitlerCheck: this.lastHitlerCheck,
+      gameOverData,
+      privateState: forPlayerId
+        ? {
+            playerId: forPlayerId,
+            nightInfo,
+            presidentCards,
+            chancellorCards,
+            canVeto,
+            peekCards,
+            investigationResult,
+          }
+        : null,
+    };
   }
 
   handleBotTurns(onUpdate: (event: string, data: any) => void) {
@@ -226,6 +528,7 @@ export class Room {
           for (const bot of pendingBots) {
             const vote: Vote = Math.random() < 0.7 ? 'JA' : 'NEIN';
             const result = this.game.castVote(bot.id, vote);
+            this.touch();
             if (!result.waiting) {
               this.notifyElectionResolution(result, onUpdate);
               break;
@@ -251,6 +554,7 @@ export class Room {
           if (eligible.length > 0) {
             const picked = eligible[Math.floor(Math.random() * eligible.length)];
             this.game.nominateChancellor(picked);
+            this.touch();
             onUpdate('state-update', {
               state: this.game.getPublicState(),
             });
@@ -275,6 +579,7 @@ export class Room {
             if (libIdx !== -1) discardIndex = libIdx;
           }
           this.game.presidentDiscard(currentPres.id, discardIndex);
+          this.touch();
           onUpdate('state-update', {
             state: this.game.getPublicState(),
           });
@@ -312,6 +617,7 @@ export class Room {
             if (libIdx !== -1) discardIndex = libIdx;
           }
           const result = this.game.chancellorDiscard(currentChan.id, discardIndex);
+          this.touch();
           if (result.gameOver) {
             onUpdate('game-over', {
               state: this.game.getPublicState(),
@@ -351,10 +657,10 @@ export class Room {
       if (currentPres && currentPres.isBot) {
         setTimeout(() => {
           if (!this.game || this.game.phase !== 'VETO_PENDING') return;
-          // Bot accepts veto if cards don't align with their party
           const hasLiberal = this.game.currentChancellorCards.includes('LIBERAL');
           const accept = currentPres.party === 'LIBERAL' ? !hasLiberal : hasLiberal;
           const res = this.game.presidentVetoResponse(currentPres.id, accept);
+          this.touch();
 
           if (res.vetoed) {
             if (res.gameOver) {
@@ -398,6 +704,7 @@ export class Room {
           if (!this.game || this.game.phase !== 'EXECUTIVE_ACTION') return;
           if (this.game.executiveAction === 'PEEK') {
             this.game.acknowledgePeek(currentPres.id);
+            this.touch();
             onUpdate('state-update', { state: this.game.getPublicState() });
             this.handleBotTurns(onUpdate);
           } else if (this.game.executiveAction === 'INVESTIGATE') {
@@ -413,6 +720,7 @@ export class Room {
               const target = targets[Math.floor(Math.random() * targets.length)];
               this.game.investigatePlayer(currentPres.id, target);
               this.game.acknowledgeInvestigation(currentPres.id);
+              this.touch();
               onUpdate('state-update', { state: this.game.getPublicState() });
               this.handleBotTurns(onUpdate);
             }
@@ -423,6 +731,7 @@ export class Room {
             if (targets.length > 0) {
               const target = targets[Math.floor(Math.random() * targets.length)];
               this.game.executeSpecialElection(currentPres.id, target);
+              this.touch();
               onUpdate('state-update', { state: this.game.getPublicState() });
               this.handleBotTurns(onUpdate);
             }
@@ -433,6 +742,8 @@ export class Room {
             if (targets.length > 0) {
               const target = targets[Math.floor(Math.random() * targets.length)];
               const killRes = this.game.executeKill(currentPres.id, target);
+              this.RecordHitlerCheck(killRes.hitlerCheck);
+              this.touch();
               if (killRes.gameOver) {
                 onUpdate('game-over', {
                   state: this.game.getPublicState(),
@@ -461,6 +772,7 @@ export class Room {
     onUpdate: (event: string, data: any) => void
   ) {
     if (!this.game) return;
+    this.RecordHitlerCheck(result.hitlerCheck);
 
     if (result.gameOver) {
       onUpdate('game-over', {
@@ -509,5 +821,36 @@ export class Room {
     }
 
     this.handleBotTurns(onUpdate);
+  }
+
+  toJSON() {
+    return {
+      code: this.code,
+      hostId: this.hostId,
+      players: this.players,
+      spectators: this.spectators,
+      started: this.started,
+      isPrivate: this.isPrivate,
+      createdAt: this.createdAt,
+      updatedAt: this.updatedAt,
+      revision: this.revision,
+      lastHitlerCheck: this.lastHitlerCheck,
+      game: this.game ? this.game.toJSON() : null,
+    };
+  }
+
+  static fromJSON(data: any): Room {
+    const room = new Room('', '', '', data.code, Boolean(data.isPrivate));
+    room.hostId = data.hostId || '';
+    room.players = Array.isArray(data.players) ? data.players : [];
+    room.spectators = Array.isArray(data.spectators) ? data.spectators : [];
+    room.started = Boolean(data.started);
+    room.isPrivate = Boolean(data.isPrivate);
+    room.createdAt = data.createdAt || Date.now();
+    room.updatedAt = data.updatedAt || Date.now();
+    room.revision = data.revision || 1;
+    room.lastHitlerCheck = data.lastHitlerCheck || null;
+    room.game = data.game ? GameEngine.fromJSON(data.game) : null;
+    return room;
   }
 }

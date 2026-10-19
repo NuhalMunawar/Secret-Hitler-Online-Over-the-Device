@@ -112,15 +112,22 @@ export default function App() {
         {!hasGameActive ? (
           <LobbyView
             roomCode={online.roomCode}
+            isPrivateRoom={online.isPrivateRoom}
             playerName={online.playerName}
             isHost={online.isHost}
             isSpectator={online.isSpectator}
             players={online.players}
             spectators={online.spectators}
+            publicRooms={online.publicRooms}
+            liveRoomPreview={online.liveRoomPreview}
+            onInspectLiveRoom={online.inspectLiveRoom}
+            onCloseLivePreview={online.closeLivePreview}
+            onRefreshPublicRooms={online.refreshPublicRooms}
             onCreateRoom={online.createRoom}
             onJoinRoom={online.joinRoom}
             onAddBot={online.addBot}
             onRemoveBot={online.removeBot}
+            onRemovePlayer={online.removePlayer}
             onStartGame={online.startGame}
             onStartOfflineGame={offline.startOfflineGame}
             onOpenRules={() => setRulesOpen(true)}

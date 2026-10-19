@@ -1111,6 +1111,89 @@ export class GameEngine {
     return res;
   }
 
+  toJSON() {
+    return {
+      players: this.players.map((p) => ({
+        ...p,
+        governmentHistory: [...(p.governmentHistory || [])],
+      })),
+      phase: this.phase,
+      roundNumber: this.roundNumber,
+      liberalPolicies: this.liberalPolicies,
+      fascistPolicies: this.fascistPolicies,
+      electionTracker: this.electionTracker,
+      drawDeck: [...this.drawDeck],
+      discardPile: [...this.discardPile],
+      reshuffleCount: this.reshuffleCount,
+      presidentIndex: this.presidentIndex,
+      chancellorIndex: this.chancellorIndex,
+      previousPresidentIndex: this.previousPresidentIndex,
+      previousChancellorIndex: this.previousChancellorIndex,
+      votes: { ...this.votes },
+      lastRevealedVotes: { ...this.lastRevealedVotes },
+      lastVotePassed: this.lastVotePassed,
+      lastVoteDetails: this.lastVoteDetails,
+      currentPresidentCards: [...this.currentPresidentCards],
+      currentChancellorCards: [...this.currentChancellorCards],
+      executiveAction: this.executiveAction,
+      investigatedPlayerIds: Array.from(this.investigatedPlayerIds),
+      lastInvestigationResult: this.lastInvestigationResult,
+      specialElectionReturnIndex: this.specialElectionReturnIndex,
+      vetoRequestedByChancellor: this.vetoRequestedByChancellor,
+      vetoUsedThisRound: this.vetoUsedThisRound,
+      winner: this.winner,
+      winReason: this.winReason,
+      log: [...this.log],
+    };
+  }
+
+  static fromJSON(data: any): GameEngine {
+    const engine = new GameEngine();
+    engine.players = (data.players || []).map((p: any) => ({
+      id: p.id,
+      name: p.name,
+      role: p.role || 'LIBERAL',
+      party: p.party || 'LIBERAL',
+      isAlive: p.isAlive !== false,
+      isBot: Boolean(p.isBot),
+      governmentHistory: Array.isArray(p.governmentHistory) ? [...p.governmentHistory] : [],
+    }));
+    engine.phase = data.phase || 'LOBBY';
+    engine.roundNumber = data.roundNumber || 0;
+    engine.liberalPolicies = data.liberalPolicies || 0;
+    engine.fascistPolicies = data.fascistPolicies || 0;
+    engine.electionTracker = data.electionTracker || 0;
+    engine.drawDeck = Array.isArray(data.drawDeck) ? [...data.drawDeck] : [];
+    engine.discardPile = Array.isArray(data.discardPile) ? [...data.discardPile] : [];
+    engine.reshuffleCount = data.reshuffleCount || 0;
+    engine.presidentIndex = data.presidentIndex || 0;
+    engine.chancellorIndex = data.chancellorIndex ?? null;
+    engine.previousPresidentIndex = data.previousPresidentIndex ?? null;
+    engine.previousChancellorIndex = data.previousChancellorIndex ?? null;
+    engine.votes = data.votes || {};
+    engine.lastRevealedVotes = data.lastRevealedVotes || {};
+    engine.lastVotePassed = data.lastVotePassed ?? null;
+    engine.lastVoteDetails = data.lastVoteDetails ?? null;
+    engine.currentPresidentCards = Array.isArray(data.currentPresidentCards)
+      ? [...data.currentPresidentCards]
+      : [];
+    engine.currentChancellorCards = Array.isArray(data.currentChancellorCards)
+      ? [...data.currentChancellorCards]
+      : [];
+    engine.executiveAction = data.executiveAction || 'NONE';
+    engine.investigatedPlayerIds = new Set(
+      Array.isArray(data.investigatedPlayerIds) ? data.investigatedPlayerIds : []
+    );
+    engine.lastInvestigationResult = data.lastInvestigationResult ?? null;
+    engine.specialElectionReturnIndex = data.specialElectionReturnIndex ?? null;
+    engine.vetoRequestedByChancellor = Boolean(data.vetoRequestedByChancellor);
+    engine.vetoUsedThisRound = Boolean(data.vetoUsedThisRound);
+    engine.winner = data.winner ?? null;
+    engine.winReason = data.winReason ?? null;
+    engine.log = Array.isArray(data.log) ? [...data.log] : [];
+    return engine;
+  }
+
   private cryptoRandomInt(max: number): number {
     if (max <= 1) return 0;
     const cryptoObj = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;

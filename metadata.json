@@ -1,6 +1,8 @@
 {
   "name": "Secret Hitler",
-  "description": "Minimalist online multiplayer adaptation of the social deduction board game Secret Hitler with custom rooms and full rule implementation.",
+  "description": "Minimalist online multiplayer / over-the-device adaptation of the social deduction board game Secret Hitler with custom rooms and full rule implementation.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

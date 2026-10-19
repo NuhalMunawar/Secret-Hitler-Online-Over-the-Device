@@ -308,4 +308,74 @@ test('Table Approved/Rejected omits LastVoteDetails and Government History recor
   assert.deepEqual(chan.governmentHistory, [enactedPolicy]);
 });
 
+test('Live Room serialization, getLiveSnapshot, and multi-device seat synchronization', () => {
+  const room = new Room('host_1', 'Alice');
+  room.addPlayer('p_2', 'Bob');
+  room.addPlayer('p_3', 'Charlie');
+  room.addPlayer('p_4', 'Diana');
+  room.addPlayer('p_5', 'Evan');
+
+  // Re-joining with existing name on another device should seamlessly reconnect to that seat
+  const reconnectByName = room.addPlayer('new_device_id', 'Bob');
+  assert.equal(reconnectByName.success, true);
+  assert.equal(reconnectByName.reconnected, true);
+  assert.equal(reconnectByName.playerId, 'p_2');
+  assert.equal(room.players.length, 5);
+
+  const startRes = room.startGame();
+  assert.equal(startRes.success, true);
+
+  // Serialize to JSON and restore (simulating disk persistence / live room sync)
+  const serialized = room.toJSON();
+  const restored = Room.fromJSON(serialized);
+  assert.equal(restored.code, room.code);
+  assert.equal(restored.started, true);
+  assert.equal(restored.players.length, 5);
+
+  // Verify live snapshot for Alice includes her private nightInfo and public gameState
+  const snapAlice = restored.getLiveSnapshot('host_1');
+  assert.equal(snapAlice.success, true);
+  assert.equal(snapAlice.roomCode, room.code);
+  assert.equal(snapAlice.liveUrl, `/live/${room.code}`);
+  assert.equal(snapAlice.isHost, true);
+  assert.ok(snapAlice.gameState);
+  assert.ok(snapAlice.privateState?.nightInfo);
+});
+
+test('Host can remove any player before game starts and room supports Public/Private visibility', () => {
+  const privateRoom = new Room('host_1', 'Alice', 'sock_1', undefined, true);
+  assert.equal(privateRoom.isPrivate, true);
+  assert.equal(privateRoom.getLiveSnapshot('host_1').isPrivate, true);
+
+  privateRoom.addPlayer('p_2', 'Bob', 'sock_2');
+  privateRoom.addPlayer('p_3', 'Charlie', 'sock_3');
+  assert.equal(privateRoom.players.length, 3);
+
+  // Non-host cannot remove players
+  const nonHostKick = privateRoom.kickPlayer('p_2', 'p_3');
+  assert.equal(nonHostKick.success, false);
+  assert.equal(privateRoom.players.length, 3);
+
+  // Host cannot remove themselves
+  const selfKick = privateRoom.kickPlayer('host_1', 'host_1');
+  assert.equal(selfKick.success, false);
+
+  // Host can remove any human player before the game starts
+  const hostKick = privateRoom.kickPlayer('host_1', 'p_2');
+  assert.equal(hostKick.success, true);
+  assert.equal(hostKick.removedPlayer?.name, 'Bob');
+  assert.equal(privateRoom.players.length, 2);
+
+  // Add players and start game -> host cannot remove players once game has started
+  privateRoom.addPlayer('p_4', 'Diana');
+  privateRoom.addPlayer('p_5', 'Evan');
+  privateRoom.addPlayer('p_6', 'Fiona');
+  assert.equal(privateRoom.startGame().success, true);
+
+  const afterStartKick = privateRoom.kickPlayer('host_1', 'p_3');
+  assert.equal(afterStartKick.success, false);
+});
+
+
+
 

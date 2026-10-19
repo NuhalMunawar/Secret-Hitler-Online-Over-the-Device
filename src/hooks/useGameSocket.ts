@@ -16,11 +16,103 @@ export interface RoomMember {
   name: string;
   isHost: boolean;
   isBot?: boolean;
+  connected?: boolean;
+}
+
+export interface PublicRoomSummary {
+  roomCode: string;
+  hostName: string;
+  playerCount: number;
+  humanCount: number;
+  botCount: number;
+  spectatorCount: number;
+  started: boolean;
+  isPrivate?: boolean;
+  phase: string;
+  roundNumber: number;
+  liberalPolicies: number;
+  fascistPolicies: number;
+  createdAt: number;
+  updatedAt: number;
+  revision: number;
+  liveUrl: string;
+  players: RoomMember[];
+}
+
+export interface LiveRoomSnapshot {
+  success: boolean;
+  roomCode: string;
+  liveUrl: string;
+  revision: number;
+  updatedAt: number;
+  started: boolean;
+  isPrivate?: boolean;
+  hostId: string;
+  isHost: boolean;
+  isSpectator: boolean;
+  isSeatedPlayer: boolean;
+  players: RoomMember[];
+  spectators: Spectator[];
+  gameState: PublicGameState | null;
+  voteProgress: { votesIn: number; votesNeeded: number } | null;
+  lastElectionVotes: {
+    votes: Record<string, Vote>;
+    passed: boolean;
+    chaos?: boolean;
+    chaosPolicy?: Policy;
+  } | null;
+  lastHitlerCheck: { id: string; check: HitlerSuspenseCheck } | null;
+  gameOverData: {
+    winner: 'LIBERAL' | 'FASCIST';
+    winReason: string;
+    roles: Record<string, { role: string; party: string; name: string }>;
+  } | null;
+  privateState?: {
+    playerId: string;
+    nightInfo: NightInfo | null;
+    presidentCards: Policy[] | null;
+    chancellorCards: Policy[] | null;
+    canVeto: boolean;
+    peekCards: Policy[] | null;
+    investigationResult: {
+      targetIndex: number;
+      party: 'LIBERAL' | 'FASCIST';
+      targetName: string;
+    } | null;
+  } | null;
+}
+
+function extractRoomCodeFromUrl(): string | null {
+  const pathMatch = window.location.pathname.match(/^\/live\/([A-Za-z0-9]{4})/i);
+  if (pathMatch && pathMatch[1]) {
+    return pathMatch[1].toUpperCase();
+  }
+  const params = new URLSearchParams(window.location.search);
+  const queryCode = params.get('room') || params.get('live');
+  if (queryCode && queryCode.trim().length === 4) {
+    return queryCode.trim().toUpperCase();
+  }
+  return null;
+}
+
+function setBrowserLiveUrl(code: string | null) {
+  try {
+    if (code) {
+      const clean = code.toUpperCase().trim();
+      window.history.replaceState({}, '', `/live/${clean}?room=${clean}`);
+    } else {
+      window.history.replaceState({}, '', '/');
+    }
+  } catch {
+    // Ignore history errors in restricted iframes
+  }
 }
 
 export function useGameSocket() {
   const [connected, setConnected] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const [roomCode, setRoomCode] = useState<string | null>(null);
+  const [isPrivateRoom, setIsPrivateRoom] = useState(false);
   const [playerId, setPlayerId] = useState<string | null>(null);
   const [playerName, setPlayerName] = useState<string>('');
   const [isHost, setIsHost] = useState(false);
@@ -28,6 +120,10 @@ export function useGameSocket() {
   const [players, setPlayers] = useState<RoomMember[]>([]);
   const [spectators, setSpectators] = useState<Spectator[]>([]);
   const [gameState, setGameState] = useState<PublicGameState | null>(null);
+
+  // Public live rooms & live room page preview (when entering a code or visiting /live/:code before joining)
+  const [publicRooms, setPublicRooms] = useState<PublicRoomSummary[]>([]);
+  const [liveRoomPreview, setLiveRoomPreview] = useState<LiveRoomSnapshot | null>(null);
 
   // Private state
   const [nightInfo, setNightInfo] = useState<NightInfo | null>(null);
@@ -66,6 +162,15 @@ export function useGameSocket() {
   } | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
+  const roomCodeRef = useRef<string | null>(null);
+  const playerIdRef = useRef<string | null>(null);
+  const playerNameRef = useRef<string>('');
+  const lastSeenHitlerCheckIdRef = useRef<string | null>(null);
+  const hasShownNightForRoundRef = useRef<boolean>(false);
+
+  roomCodeRef.current = roomCode;
+  playerIdRef.current = playerId;
+  playerNameRef.current = playerName;
 
   const showNotification = useCallback(
     (message: string, type: 'info' | 'alert' | 'success' = 'info') => {
@@ -77,36 +182,277 @@ export function useGameSocket() {
     []
   );
 
+  // Apply authoritative LiveRoomSnapshot from /api/live/:code or socket sync
+  const applyLiveSnapshot = useCallback(
+    (snap: LiveRoomSnapshot) => {
+      if (!snap || !snap.success) return;
+
+      const currentPid = snap.privateState?.playerId || playerIdRef.current;
+      // Check if this player was removed from the lobby by the host
+      if (
+        roomCodeRef.current &&
+        snap.roomCode === roomCodeRef.current &&
+        currentPid &&
+        !snap.started
+      ) {
+        const stillInPlayers = (snap.players || []).some((p) => p.id === currentPid);
+        const stillInSpectators = (snap.spectators || []).some((s) => s.id === currentPid);
+        if (!stillInPlayers && !stillInSpectators) {
+          localStorage.removeItem('sh_room_code');
+          localStorage.removeItem('sh_player_id');
+          roomCodeRef.current = null;
+          playerIdRef.current = null;
+          setRoomCode(null);
+          setPlayerId(null);
+          setIsHost(false);
+          setIsSpectator(false);
+          setPlayers([]);
+          setSpectators([]);
+          setGameState(null);
+          setBrowserLiveUrl(null);
+          showNotification('You were removed from the room by the host.', 'alert');
+          return;
+        }
+      }
+
+      setLastSyncedAt(Date.now());
+      setConnected(true);
+      setIsPrivateRoom(Boolean(snap.isPrivate));
+      setPlayers(snap.players || []);
+      setSpectators(snap.spectators || []);
+      setIsHost(Boolean(snap.isHost));
+      setIsSpectator(Boolean(snap.isSpectator));
+      setGameState(snap.gameState || null);
+      setVoteProgress(snap.voteProgress || null);
+
+    if (snap.lastElectionVotes) {
+      setLastElectionVotes(snap.lastElectionVotes);
+    } else if (!snap.gameState) {
+      setLastElectionVotes(null);
+    }
+
+    if (snap.lastHitlerCheck && snap.lastHitlerCheck.id !== lastSeenHitlerCheckIdRef.current) {
+      lastSeenHitlerCheckIdRef.current = snap.lastHitlerCheck.id;
+      setChancellorSuspenseCheck(snap.lastHitlerCheck.check);
+    } else if (!snap.lastHitlerCheck && !snap.gameState) {
+      lastSeenHitlerCheckIdRef.current = null;
+      setChancellorSuspenseCheck(null);
+    }
+
+    if (snap.gameOverData) {
+      setGameOverData(snap.gameOverData);
+    } else if (!snap.gameState || snap.gameState.phase !== 'GAME_OVER') {
+      setGameOverData(null);
+    }
+
+    if (snap.privateState) {
+      if (snap.privateState.nightInfo) {
+        setNightInfo(snap.privateState.nightInfo);
+        if (
+          snap.gameState?.phase === 'NIGHT' &&
+          !snap.isSpectator &&
+          !hasShownNightForRoundRef.current
+        ) {
+          hasShownNightForRoundRef.current = true;
+          setShowNightModal(true);
+        }
+      }
+      setPresidentCards(snap.privateState.presidentCards || null);
+      setChancellorCards(snap.privateState.chancellorCards || null);
+      setCanVeto(Boolean(snap.privateState.canVeto));
+      setPeekCards(snap.privateState.peekCards || null);
+      if (snap.privateState.investigationResult) {
+        setInvestigationResult(snap.privateState.investigationResult);
+      }
+    }
+
+    if (!snap.gameState) {
+      hasShownNightForRoundRef.current = false;
+      setNightInfo(null);
+      setPresidentCards(null);
+      setChancellorCards(null);
+      setPeekCards(null);
+      setInvestigationResult(null);
+    }
+  }, [showNotification]);
+
+  // Fetch public live rooms directory
+  const refreshPublicRooms = useCallback(async () => {
+    try {
+      const res = await fetch('/api/live');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data?.success && Array.isArray(data.rooms)) {
+        setPublicRooms(data.rooms);
+        setConnected(true);
+      }
+    } catch {
+      // Ignore network hiccup
+    }
+  }, []);
+
+  // Fetch / inspect a specific live room by 4-letter code
+  const inspectLiveRoom = useCallback(
+    async (rawCode: string): Promise<{ success: boolean; snapshot?: LiveRoomSnapshot; error?: string }> => {
+      const code = (rawCode || '').toUpperCase().trim();
+      if (!code) return { success: false, error: 'Please enter a 4-letter room code.' };
+      try {
+        const savedId = localStorage.getItem('sh_player_id') || '';
+        const res = await fetch(`/api/live/${encodeURIComponent(code)}?playerId=${encodeURIComponent(savedId)}`);
+        const data = await res.json();
+        if (!res.ok || !data?.success) {
+          return {
+            success: false,
+            error: data?.error || `Live room "${code}" not found.`,
+          };
+        }
+        setLiveRoomPreview(data);
+        setBrowserLiveUrl(code);
+        return { success: true, snapshot: data };
+      } catch (err: any) {
+        return { success: false, error: err?.message || 'Could not reach live room server.' };
+      }
+    },
+    []
+  );
+
+  const closeLivePreview = useCallback(() => {
+    setLiveRoomPreview(null);
+    if (!roomCodeRef.current) {
+      setBrowserLiveUrl(null);
+    }
+  }, []);
+
+  // Sync active room via HTTP GET /api/live/:code
+  const syncActiveRoomFromHttp = useCallback(
+    async (targetCode?: string, targetPlayerId?: string) => {
+      const code = targetCode || roomCodeRef.current;
+      const pid = targetPlayerId || playerIdRef.current;
+      if (!code) return;
+      try {
+        const url = `/api/live/${encodeURIComponent(code)}${
+          pid ? `?playerId=${encodeURIComponent(pid)}` : ''
+        }`;
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const snap: LiveRoomSnapshot = await res.json();
+        if (snap && snap.success) {
+          applyLiveSnapshot(snap);
+        }
+      } catch {
+        // Ignore transient fetch errors
+      }
+    },
+    [applyLiveSnapshot]
+  );
+
+  // Initial boot: setup socket, check URL /live/:code or localStorage, start polling sync
   useEffect(() => {
     const savedCode = localStorage.getItem('sh_room_code');
     const savedName = localStorage.getItem('sh_player_name');
     const savedId = localStorage.getItem('sh_player_id');
+    const urlCode = extractRoomCodeFromUrl();
 
     if (savedName) setPlayerName(savedName);
+    refreshPublicRooms();
 
     const socket = io(window.location.origin, {
-      reconnectionAttempts: 10,
+      reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
+      transports: ['websocket', 'polling'],
     });
     socketRef.current = socket;
 
+    const targetCode = urlCode || savedCode;
+
+    // Immediately sync or preview targetCode over HTTP so we never wait on socket handshake
+    if (targetCode) {
+      (async () => {
+        try {
+          const res = await fetch(
+            `/api/live/${encodeURIComponent(targetCode)}${
+              savedId ? `?playerId=${encodeURIComponent(savedId)}` : ''
+            }`
+          );
+          if (!res.ok) {
+            if (savedCode === targetCode) {
+              localStorage.removeItem('sh_room_code');
+            }
+            return;
+          }
+          const snap: LiveRoomSnapshot = await res.json();
+          if (!snap?.success) return;
+
+          // Check if savedId or savedName matches a player/spectator in this room
+          const matchedPlayer = snap.players.find(
+            (p) =>
+              !p.isBot &&
+              ((savedId && p.id === savedId) ||
+                (savedName && p.name.toLowerCase() === savedName.toLowerCase()))
+          );
+          const matchedSpec = snap.spectators.find(
+            (s) =>
+              (savedId && s.id === savedId) ||
+              (savedName && s.name.toLowerCase() === savedName.toLowerCase())
+          );
+
+          if (matchedPlayer || matchedSpec) {
+            const resolvedId = matchedPlayer ? matchedPlayer.id : matchedSpec!.id;
+            const resolvedName = matchedPlayer ? matchedPlayer.name : matchedSpec!.name;
+            setRoomCode(snap.roomCode);
+            setPlayerId(resolvedId);
+            setPlayerName(resolvedName);
+            localStorage.setItem('sh_room_code', snap.roomCode);
+            localStorage.setItem('sh_player_id', resolvedId);
+            localStorage.setItem('sh_player_name', resolvedName);
+            setBrowserLiveUrl(snap.roomCode);
+            setLiveRoomPreview(null);
+
+            // Fetch full snapshot with resolvedId
+            const fullRes = await fetch(
+              `/api/live/${encodeURIComponent(snap.roomCode)}?playerId=${encodeURIComponent(resolvedId)}`
+            );
+            if (fullRes.ok) {
+              const fullSnap = await fullRes.json();
+              applyLiveSnapshot(fullSnap);
+            } else {
+              applyLiveSnapshot(snap);
+            }
+
+            if (socket.connected) {
+              socket.emit('reconnect-room', {
+                roomCode: snap.roomCode,
+                playerName: resolvedName,
+                playerId: resolvedId,
+              }, () => {});
+            }
+          } else if (urlCode) {
+            // Opened /live/:code on a new device -> show the Live Room Page!
+            setLiveRoomPreview(snap);
+            setBrowserLiveUrl(snap.roomCode);
+          }
+        } catch {
+          // Ignore initial fetch failure
+        }
+      })();
+    }
+
     socket.on('connect', () => {
       setConnected(true);
+      const activeCode = roomCodeRef.current || localStorage.getItem('sh_room_code');
+      const activeName = playerNameRef.current || localStorage.getItem('sh_player_name');
+      const activeId = playerIdRef.current || localStorage.getItem('sh_player_id');
 
-      if (savedCode && savedName) {
+      if (activeCode && (activeName || activeId)) {
         socket.emit(
           'reconnect-room',
-          { roomCode: savedCode, playerName: savedName, playerId: savedId },
+          { roomCode: activeCode, playerName: activeName || '', playerId: activeId || undefined },
           (res: any) => {
-            if (res.success) {
+            if (res?.success) {
               setRoomCode(res.roomCode);
               setPlayerId(res.playerId);
-              setIsHost(Boolean(res.isHost));
-              setIsSpectator(Boolean(res.isSpectator));
-              setPlayers(res.players || []);
-              setSpectators(res.spectators || []);
-              if (res.gameState) setGameState(res.gameState);
-              if (res.nightInfo) setNightInfo(res.nightInfo);
+              setBrowserLiveUrl(res.roomCode);
+              applyLiveSnapshot(res);
             }
           }
         );
@@ -114,7 +460,17 @@ export function useGameSocket() {
     });
 
     socket.on('disconnect', () => {
-      setConnected(false);
+      // Note: HTTP Live Sync continues working even if socket disconnects!
+    });
+
+    socket.on('public-rooms-updated', (data: { rooms: PublicRoomSummary[] }) => {
+      if (data?.rooms) setPublicRooms(data.rooms);
+    });
+
+    socket.on('live-room-sync', (snap: LiveRoomSnapshot) => {
+      if (snap?.roomCode && snap.roomCode === roomCodeRef.current) {
+        syncActiveRoomFromHttp(snap.roomCode, playerIdRef.current || undefined);
+      }
     });
 
     socket.on(
@@ -130,8 +486,8 @@ export function useGameSocket() {
         sound.playClick();
         showNotification(
           data.isSpectator
-            ? `${data.playerName} joined as a Spectator.`
-            : `${data.playerName} joined the room.`,
+            ? `${data.playerName} joined the live room as a Spectator.`
+            : `${data.playerName} joined the live room.`,
           'info'
         );
       }
@@ -142,9 +498,28 @@ export function useGameSocket() {
       if (data.spectators) setSpectators(data.spectators);
     });
 
+    socket.on('kicked-from-room', (data: { roomCode?: string; reason?: string }) => {
+      localStorage.removeItem('sh_room_code');
+      localStorage.removeItem('sh_player_id');
+      roomCodeRef.current = null;
+      playerIdRef.current = null;
+      setRoomCode(null);
+      setPlayerId(null);
+      setIsHost(false);
+      setIsSpectator(false);
+      setPlayers([]);
+      setSpectators([]);
+      setGameState(null);
+      setBrowserLiveUrl(null);
+      sound.playClick();
+      showNotification(data?.reason || 'You were removed from the room by the host.', 'alert');
+      refreshPublicRooms();
+    });
+
     socket.on(
       'game-started',
       (data: { nightInfo: NightInfo | null; state: PublicGameState; isSpectator?: boolean }) => {
+        hasShownNightForRoundRef.current = true;
         setNightInfo(data.nightInfo);
         setGameState(data.state);
         if (!data.isSpectator && data.nightInfo) {
@@ -156,7 +531,7 @@ export function useGameSocket() {
         sound.playCardShuffle();
         showNotification(
           data.isSpectator
-            ? 'Game started! You are spectating.'
+            ? 'Game started! You are spectating live.'
             : 'Roles & policy deck shuffled! Inspect your secret envelope.',
           'alert'
         );
@@ -335,6 +710,7 @@ export function useGameSocket() {
     );
 
     socket.on('game-reset', (data: { players: RoomMember[]; spectators?: Spectator[] }) => {
+      hasShownNightForRoundRef.current = false;
       setGameState(null);
       setPlayers(data.players);
       if (data.spectators) setSpectators(data.spectators);
@@ -352,201 +728,328 @@ export function useGameSocket() {
     return () => {
       socket.disconnect();
     };
-  }, [showNotification]);
+  }, [applyLiveSnapshot, refreshPublicRooms, showNotification, syncActiveRoomFromHttp]);
 
-  const createRoom = (name: string): Promise<{ success: boolean; error?: string }> => {
-    return new Promise((resolve) => {
-      if (!socketRef.current) return resolve({ success: false, error: 'Connecting to server...' });
-      socketRef.current.emit('create-room', { playerName: name }, (res: any) => {
-        if (res.success) {
-          sound.playClick();
-          setRoomCode(res.roomCode);
-          setPlayerId(res.playerId);
-          setPlayerName(name);
-          setIsHost(true);
-          setIsSpectator(false);
-          setPlayers(res.players || []);
-          setSpectators(res.spectators || []);
-          localStorage.setItem('sh_room_code', res.roomCode);
-          localStorage.setItem('sh_player_name', name);
-          localStorage.setItem('sh_player_id', res.playerId);
-          resolve({ success: true });
+  // Continuous HTTP Live Sync Interval (keeps all devices in sync every 1.5s even if WebSockets drop)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (roomCodeRef.current) {
+        syncActiveRoomFromHttp();
+      } else if (liveRoomPreview?.roomCode) {
+        inspectLiveRoom(liveRoomPreview.roomCode);
+      } else {
+        refreshPublicRooms();
+      }
+    }, 1500);
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        if (roomCodeRef.current) {
+          syncActiveRoomFromHttp();
         } else {
-          resolve({ success: false, error: res.error });
+          refreshPublicRooms();
         }
+      }
+    };
+    window.addEventListener('focus', handleVisibility);
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', handleVisibility);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [inspectLiveRoom, liveRoomPreview?.roomCode, refreshPublicRooms, syncActiveRoomFromHttp]);
+
+  // Helper to send action via HTTP /api/live/:code/action (guaranteed delivery & state sync)
+  const sendLiveAction = useCallback(
+    async (action: string, payload: Record<string, any> = {}) => {
+      const code = roomCodeRef.current;
+      const pid = playerIdRef.current;
+      if (!code || !pid) return { success: false, error: 'Not in a live room' };
+
+      try {
+        const res = await fetch(`/api/live/${encodeURIComponent(code)}/action`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, playerId: pid, payload }),
+        });
+        const data = await res.json();
+        if (data?.snapshot) {
+          applyLiveSnapshot(data.snapshot);
+        }
+        return data;
+      } catch (err: any) {
+        return { success: false, error: err?.message || 'Network error' };
+      }
+    },
+    [applyLiveSnapshot]
+  );
+
+  const createRoom = async (
+    name: string,
+    isPrivate = false
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const cleanName = name.trim() || 'Host';
+      const res = await fetch('/api/live/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerName: cleanName, isPrivate: Boolean(isPrivate) }),
       });
-    });
+      const data = await res.json();
+      if (!res.ok || !data?.success) {
+        return { success: false, error: data?.error || 'Failed to create room' };
+      }
+
+      sound.playClick();
+      roomCodeRef.current = data.roomCode;
+      playerIdRef.current = data.playerId;
+      playerNameRef.current = cleanName;
+      setRoomCode(data.roomCode);
+      setIsPrivateRoom(Boolean(data.isPrivate));
+      setPlayerId(data.playerId);
+      setPlayerName(cleanName);
+      setLiveRoomPreview(null);
+      localStorage.setItem('sh_room_code', data.roomCode);
+      localStorage.setItem('sh_player_name', cleanName);
+      localStorage.setItem('sh_player_id', data.playerId);
+      setBrowserLiveUrl(data.roomCode);
+      applyLiveSnapshot(data);
+
+      // Bind socket to the newly created live room as well
+      if (socketRef.current?.connected) {
+        socketRef.current.emit(
+          'reconnect-room',
+          { roomCode: data.roomCode, playerName: cleanName, playerId: data.playerId },
+          () => {}
+        );
+      }
+
+      showNotification(
+        data.isPrivate
+          ? `Private Room ${data.roomCode} created! Share code ${data.roomCode} with invited players.`
+          : `Public Live Room ${data.roomCode} created! Share code ${data.roomCode} or link /live/${data.roomCode}.`,
+        'success'
+      );
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to create live room' };
+    }
   };
 
-  const joinRoom = (code: string, name: string): Promise<{ success: boolean; error?: string }> => {
-    return new Promise((resolve) => {
-      if (!socketRef.current) return resolve({ success: false, error: 'Connecting to server...' });
-      socketRef.current.emit('join-room', { roomCode: code, playerName: name }, (res: any) => {
-        if (res.success) {
-          sound.playClick();
-          setRoomCode(res.roomCode);
-          setPlayerId(res.playerId);
-          setPlayerName(name);
-          setIsHost(false);
-          setIsSpectator(Boolean(res.isSpectator));
-          setPlayers(res.players || []);
-          setSpectators(res.spectators || []);
-          if (res.gameState) setGameState(res.gameState);
-          localStorage.setItem('sh_room_code', res.roomCode);
-          localStorage.setItem('sh_player_name', name);
-          localStorage.setItem('sh_player_id', res.playerId);
-          if (res.isSpectator) {
-            showNotification('Game is already in progress — you joined as a Spectator.', 'info');
-          }
-          resolve({ success: true });
-        } else {
-          resolve({ success: false, error: res.error });
-        }
+  const joinRoom = async (
+    code: string,
+    name: string,
+    claimPlayerId?: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const cleanCode = (code || '').toUpperCase().trim();
+      const cleanName = (name || '').trim();
+      const savedId = localStorage.getItem('sh_player_id') || undefined;
+
+      const res = await fetch(`/api/live/${encodeURIComponent(cleanCode)}/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          playerName: cleanName,
+          playerId: savedId,
+          claimPlayerId,
+        }),
       });
-    });
+      const data = await res.json();
+      if (!res.ok || !data?.success) {
+        return { success: false, error: data?.error || `Room "${cleanCode}" not found.` };
+      }
+
+      sound.playClick();
+      roomCodeRef.current = data.roomCode;
+      playerIdRef.current = data.playerId;
+      playerNameRef.current = data.playerName || cleanName;
+      setRoomCode(data.roomCode);
+      setIsPrivateRoom(Boolean(data.isPrivate));
+      setPlayerId(data.playerId);
+      setPlayerName(data.playerName || cleanName);
+      setLiveRoomPreview(null);
+      localStorage.setItem('sh_room_code', data.roomCode);
+      localStorage.setItem('sh_player_name', data.playerName || cleanName);
+      localStorage.setItem('sh_player_id', data.playerId);
+      setBrowserLiveUrl(data.roomCode);
+      applyLiveSnapshot(data);
+
+      if (socketRef.current?.connected) {
+        socketRef.current.emit(
+          'reconnect-room',
+          {
+            roomCode: data.roomCode,
+            playerName: data.playerName || cleanName,
+            playerId: data.playerId,
+          },
+          () => {}
+        );
+      }
+
+      if (data.reconnected) {
+        showNotification(`Synced to seat "${data.playerName}" in Live Room ${data.roomCode}!`, 'success');
+      } else if (data.isSpectator) {
+        showNotification('Game is in progress — you joined the Live Room as a Spectator.', 'info');
+      } else {
+        showNotification(`Joined Live Room ${data.roomCode}!`, 'success');
+      }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to join room' };
+    }
   };
 
-  const leaveRoom = () => {
+  const leaveRoom = async () => {
     sound.playClick();
+    if (roomCodeRef.current && playerIdRef.current) {
+      await sendLiveAction('leave-room', {});
+    }
     localStorage.removeItem('sh_room_code');
+    localStorage.removeItem('sh_player_id');
+    roomCodeRef.current = null;
+    playerIdRef.current = null;
     setRoomCode(null);
+    setIsPrivateRoom(false);
+    setPlayerId(null);
     setIsSpectator(false);
+    setIsHost(false);
     setGameState(null);
     setNightInfo(null);
     setGameOverData(null);
     setChancellorSuspenseCheck(null);
-    window.history.replaceState({}, '', window.location.pathname);
+    setLiveRoomPreview(null);
+    setBrowserLiveUrl(null);
+    refreshPublicRooms();
   };
 
-  const addBot = () => {
+  const addBot = async () => {
     sound.playClick();
-    socketRef.current?.emit('add-bot', {}, (res: any) => {
-      if (!res.success) showNotification(res.error || 'Failed to add bot', 'alert');
-    });
+    const res = await sendLiveAction('add-bot');
+    if (!res.success) showNotification(res.error || 'Failed to add bot', 'alert');
   };
 
-  const removeBot = (botId: string) => {
+  const removeBot = async (botId: string) => {
     sound.playClick();
-    socketRef.current?.emit('remove-bot', { botId }, (res: any) => {
-      if (!res.success) showNotification(res.error || 'Failed to remove bot', 'alert');
-    });
+    const res = await sendLiveAction('remove-player', { targetPlayerId: botId });
+    if (!res.success) showNotification(res.error || 'Failed to remove bot', 'alert');
   };
 
-  const startGame = () => {
+  const removePlayer = async (targetPlayerId: string) => {
+    sound.playClick();
+    const res = await sendLiveAction('remove-player', { targetPlayerId });
+    if (!res.success) {
+      showNotification(res.error || 'Failed to remove player', 'alert');
+    } else if (res.removedPlayerName) {
+      showNotification(`Removed ${res.removedPlayerName} from the room.`, 'info');
+    }
+  };
+
+  const startGame = async () => {
     sound.playCardShuffle();
-    socketRef.current?.emit('start-game', {}, (res: any) => {
-      if (res.success) {
-        if (res.nightInfo) setNightInfo(res.nightInfo);
-        if (res.state) setGameState(res.state);
-        setShowNightModal(true);
-        setGameOverData(null);
-        setLastElectionVotes(null);
-        setChancellorSuspenseCheck(null);
-        showNotification('Roles & policy deck shuffled! Inspect your secret envelope.', 'alert');
-      } else {
-        showNotification(res.error || 'Could not start game', 'alert');
-      }
-    });
+    const res = await sendLiveAction('start-game');
+    if (res.success) {
+      hasShownNightForRoundRef.current = true;
+      if (res.nightInfo) setNightInfo(res.nightInfo);
+      if (res.state) setGameState(res.state);
+      setShowNightModal(true);
+      setGameOverData(null);
+      setLastElectionVotes(null);
+      setChancellorSuspenseCheck(null);
+      showNotification('Roles & policy deck shuffled! Inspect your secret envelope.', 'alert');
+    } else {
+      showNotification(res.error || 'Could not start game', 'alert');
+    }
   };
 
-  const completeNight = () => {
+  const completeNight = async () => {
     sound.playClick();
     setShowNightModal(false);
-    socketRef.current?.emit('night-complete', {}, (res: any) => {
-      if (!res.success) console.warn(res.error);
-    });
+    await sendLiveAction('night-complete');
   };
 
-  const nominateChancellor = (index: number) => {
+  const nominateChancellor = async (index: number) => {
     sound.playClick();
-    socketRef.current?.emit('nominate-chancellor', { chancellorIndex: index }, (res: any) => {
-      if (!res.success) showNotification(res.error || 'Nomination failed', 'alert');
-    });
+    const res = await sendLiveAction('nominate-chancellor', { chancellorIndex: index });
+    if (!res.success) showNotification(res.error || 'Nomination failed', 'alert');
   };
 
-  const castVote = (vote: Vote) => {
+  const castVote = async (vote: Vote) => {
     sound.playVoteCast();
-    socketRef.current?.emit('cast-vote', { vote }, (res: any) => {
-      if (!res.success) showNotification(res.error || 'Vote failed', 'alert');
-    });
+    const res = await sendLiveAction('cast-vote', { vote });
+    if (!res.success) showNotification(res.error || 'Vote failed', 'alert');
   };
 
-  const presidentDiscard = (index: number) => {
+  const presidentDiscard = async (index: number) => {
     sound.playPaperSlide();
-    socketRef.current?.emit('president-discard', { cardIndex: index }, (res: any) => {
-      if (res.success) setPresidentCards(null);
-      else showNotification(res.error || 'Discard failed', 'alert');
-    });
+    const res = await sendLiveAction('president-discard', { cardIndex: index });
+    if (res.success) setPresidentCards(null);
+    else showNotification(res.error || 'Discard failed', 'alert');
   };
 
-  const chancellorDiscard = (index: number) => {
+  const chancellorDiscard = async (index: number) => {
     sound.playPaperSlide();
-    socketRef.current?.emit('chancellor-discard', { cardIndex: index }, (res: any) => {
-      if (res.success) setChancellorCards(null);
-      else showNotification(res.error || 'Enact failed', 'alert');
-    });
+    const res = await sendLiveAction('chancellor-discard', { cardIndex: index });
+    if (res.success) setChancellorCards(null);
+    else showNotification(res.error || 'Enact failed', 'alert');
   };
 
-  const chancellorVeto = () => {
+  const chancellorVeto = async () => {
     sound.playGavel();
-    socketRef.current?.emit('chancellor-veto', {}, (res: any) => {
-      if (!res.success) showNotification(res.error || 'Veto request failed', 'alert');
-    });
+    const res = await sendLiveAction('chancellor-veto');
+    if (!res.success) showNotification(res.error || 'Veto request failed', 'alert');
   };
 
-  const presidentVetoResponse = (accept: boolean) => {
+  const presidentVetoResponse = async (accept: boolean) => {
     sound.playGavel();
-    socketRef.current?.emit('president-veto-response', { accept }, (res: any) => {
-      if (!res.success) showNotification(res.error || 'Veto response failed', 'alert');
-    });
+    const res = await sendLiveAction('president-veto-response', { accept });
+    if (!res.success) showNotification(res.error || 'Veto response failed', 'alert');
   };
 
-  const acknowledgePeek = () => {
+  const acknowledgePeek = async () => {
     sound.playClick();
     setPeekCards(null);
-    socketRef.current?.emit('acknowledge-peek', {}, () => {});
+    await sendLiveAction('acknowledge-peek');
   };
 
-  const investigatePlayer = (targetIndex: number) => {
+  const investigatePlayer = async (targetIndex: number) => {
     sound.playInvestigation();
-    socketRef.current?.emit('investigate-player', { targetIndex }, (res: any) => {
-      if (res.success) {
-        setInvestigationResult({
-          targetIndex: res.targetIndex,
-          party: res.party,
-          targetName: res.targetName,
-        });
-      } else {
-        showNotification(res.error || 'Investigation failed', 'alert');
-      }
-    });
+    const res = await sendLiveAction('investigate-player', { targetIndex });
+    if (res.success) {
+      setInvestigationResult({
+        targetIndex: res.targetIndex,
+        party: res.party,
+        targetName: res.targetName,
+      });
+    } else {
+      showNotification(res.error || 'Investigation failed', 'alert');
+    }
   };
 
-  const acknowledgeInvestigation = () => {
+  const acknowledgeInvestigation = async () => {
     sound.playClick();
     setInvestigationResult(null);
-    socketRef.current?.emit('acknowledge-investigation', {}, () => {});
+    await sendLiveAction('acknowledge-investigation');
   };
 
-  const specialElection = (targetIndex: number) => {
+  const specialElection = async (targetIndex: number) => {
     sound.playGavel();
-    socketRef.current?.emit('special-election', { targetIndex }, (res: any) => {
-      if (!res.success) showNotification(res.error || 'Special election failed', 'alert');
-    });
+    const res = await sendLiveAction('special-election', { targetIndex });
+    if (!res.success) showNotification(res.error || 'Special election failed', 'alert');
   };
 
-  const executePlayer = (targetIndex: number) => {
+  const executePlayer = async (targetIndex: number) => {
     sound.playExecution();
-    socketRef.current?.emit('execute-player', { targetIndex }, (res: any) => {
-      if (!res.success) showNotification(res.error || 'Execution failed', 'alert');
-    });
+    const res = await sendLiveAction('execute-player', { targetIndex });
+    if (!res.success) showNotification(res.error || 'Execution failed', 'alert');
   };
 
-  const restartGame = () => {
+  const restartGame = async () => {
     sound.playClick();
-    socketRef.current?.emit('restart-game', {}, (res: any) => {
-      if (!res.success) showNotification(res.error || 'Restart failed', 'alert');
-    });
+    const res = await sendLiveAction('restart-game');
+    if (!res.success) showNotification(res.error || 'Restart failed', 'alert');
   };
 
   const dismissChancellorSuspense = () => {
@@ -565,7 +1068,9 @@ export function useGameSocket() {
 
   return {
     connected,
+    lastSyncedAt,
     roomCode,
+    isPrivateRoom,
     playerId,
     playerName,
     isHost,
@@ -573,6 +1078,11 @@ export function useGameSocket() {
     players,
     spectators,
     gameState,
+    publicRooms,
+    liveRoomPreview,
+    inspectLiveRoom,
+    closeLivePreview,
+    refreshPublicRooms,
     nightInfo,
     showNightModal,
     setShowNightModal,
@@ -593,6 +1103,7 @@ export function useGameSocket() {
     leaveRoom,
     addBot,
     removeBot,
+    removePlayer,
     startGame,
     completeNight,
     nominateChancellor,
