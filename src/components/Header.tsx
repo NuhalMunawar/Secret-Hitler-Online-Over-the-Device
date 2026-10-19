@@ -7,8 +7,8 @@ import {
   LogOut,
   Volume2,
   VolumeX,
-  ShieldCheck,
   Smartphone,
+  Radio,
 } from 'lucide-react';
 import { sound } from '../utils/sound.js';
 
@@ -18,7 +18,6 @@ interface HeaderProps {
   isSpectator: boolean;
   onOpenRules: () => void;
   onOpenDossier: () => void;
-  onOpenDiagnostics: () => void;
   onLeaveRoom: () => void;
   hasRole: boolean;
 }
@@ -29,12 +28,12 @@ export const Header: React.FC<HeaderProps> = ({
   isSpectator,
   onOpenRules,
   onOpenDossier,
-  onOpenDiagnostics,
   onLeaveRoom,
   hasRole,
 }) => {
   const [copied, setCopied] = useState(false);
   const [muted, setMuted] = useState(sound.muted);
+  const [ambience, setAmbience] = useState(sound.ambienceActive);
 
   const copyRoomLink = () => {
     if (!roomCode) return;
@@ -49,6 +48,13 @@ export const Header: React.FC<HeaderProps> = ({
   const handleToggleSound = () => {
     const next = sound.toggleMute();
     setMuted(next);
+    if (next) setAmbience(false);
+  };
+
+  const handleToggleAmbience = () => {
+    const active = sound.toggleAmbience();
+    setAmbience(active);
+    setMuted(sound.muted);
   };
 
   return (
@@ -104,18 +110,6 @@ export const Header: React.FC<HeaderProps> = ({
           <span>Rulebook</span>
         </button>
 
-        <button
-          onClick={() => {
-            sound.playClick();
-            onOpenDiagnostics();
-          }}
-          className="flex items-center gap-1.5 text-[#d6cfc2] hover:text-[#f4efe6] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-        >
-          <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-          <span className="hidden sm:inline">Verify Rules</span>
-          <span className="sm:hidden">Verify</span>
-        </button>
-
         {(hasRole || isOfflineMode) && !isSpectator && (
           <button
             onClick={() => {
@@ -130,13 +124,25 @@ export const Header: React.FC<HeaderProps> = ({
         )}
 
         <button
+          onClick={handleToggleAmbience}
+          aria-label={ambience ? 'Disable tabletop atmosphere drone' : 'Enable tabletop atmosphere drone'}
+          title={ambience ? 'Disable tabletop atmosphere' : 'Enable tabletop atmosphere'}
+          className={`flex items-center gap-1 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            ambience ? 'text-emerald-400 font-semibold' : 'text-[#a89f91] hover:text-[#f4efe6]'
+          }`}
+        >
+          <Radio className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">{ambience ? 'Ambience On' : 'Ambience'}</span>
+        </button>
+
+        <button
           onClick={handleToggleSound}
           aria-label={muted ? 'Unmute sound effects' : 'Mute sound effects'}
           title={muted ? 'Unmute sound effects' : 'Mute sound effects'}
           className="flex items-center gap-1 text-[#a89f91] hover:text-[#f4efe6] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
         >
           {muted ? <VolumeX className="w-4 h-4 text-[#c83228]" /> : <Volume2 className="w-4 h-4 text-[#d4a359]" />}
-          <span className="hidden md:inline">{muted ? 'Muted' : 'Sound'}</span>
+          <span className="hidden md:inline">{muted ? 'Muted' : 'Sound FX'}</span>
         </button>
       </nav>
 

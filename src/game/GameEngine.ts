@@ -1,6 +1,8 @@
 import {
   ExecutiveAction,
   GameLogEntry,
+  HitlerSuspenseCheck,
+  LastVoteDetails,
   NightInfo,
   Party,
   Phase,
@@ -22,6 +24,7 @@ export class GameEngine {
 
   drawDeck: Policy[] = [];
   discardPile: Policy[] = [];
+  reshuffleCount = 0;
 
   presidentIndex = 0;
   chancellorIndex: number | null = null;
@@ -31,6 +34,7 @@ export class GameEngine {
   votes: Record<string, Vote> = {};
   lastRevealedVotes: Record<string, Vote> = {};
   lastVotePassed: boolean | null = null;
+  lastVoteDetails: LastVoteDetails | null = null;
 
   currentPresidentCards: Policy[] = [];
   currentChancellorCards: Policy[] = [];
@@ -55,6 +59,7 @@ export class GameEngine {
       party: 'LIBERAL',
       isAlive: true,
       isBot: p.isBot || false,
+      governmentHistory: [],
     }));
   }
 
@@ -97,21 +102,26 @@ export class GameEngine {
     for (let i = 0; i < numFascists; i++) roles.push('FASCIST');
     roles.push('HITLER');
 
+    // Multi-pass cryptographic Fisher-Yates shuffle + random cyclic offset
     this.shuffle(roles);
+    const seatOffset = this.cryptoRandomInt(this.players.length);
 
     for (let i = 0; i < this.players.length; i++) {
-      this.players[i].role = roles[i];
-      this.players[i].party = roles[i] === 'LIBERAL' ? 'LIBERAL' : 'FASCIST';
+      const assignedRole = roles[(i + seatOffset) % roles.length];
+      this.players[i].role = assignedRole;
+      this.players[i].party = assignedRole === 'LIBERAL' ? 'LIBERAL' : 'FASCIST';
       this.players[i].isAlive = true;
+      this.players[i].governmentHistory = [];
     }
 
-    // 17 Policy tiles: 6 Liberal, 11 Fascist
+    // Official 17 Policy tiles: 6 Liberal, 11 Fascist
     this.drawDeck = [
       ...Array(6).fill('LIBERAL'),
       ...Array(11).fill('FASCIST'),
     ];
     this.shuffle(this.drawDeck);
     this.discardPile = [];
+    this.reshuffleCount = 0;
 
     this.liberalPolicies = 0;
     this.fascistPolicies = 0;
@@ -125,6 +135,7 @@ export class GameEngine {
     this.votes = {};
     this.lastRevealedVotes = {};
     this.lastVotePassed = null;
+    this.lastVoteDetails = null;
     this.currentPresidentCards = [];
     this.currentChancellorCards = [];
     this.vetoRequestedByChancellor = false;
@@ -133,13 +144,13 @@ export class GameEngine {
     this.winReason = null;
     this.log = [];
 
-    // Random first president
-    this.presidentIndex = Math.floor(Math.random() * this.players.length);
+    // Unbiased cryptographic random first president
+    this.presidentIndex = this.cryptoRandomInt(this.players.length);
     this.chancellorIndex = null;
     this.phase = 'NIGHT';
 
     this.addLog(
-      `Session initialized with ${this.players.length} players (${numLiberals} Liberals, ${numFascists} Fascist${numFascists > 1 ? 's' : ''}, 1 Secret Hitler).`,
+      `Session initialized with ${this.players.length} players (${numLiberals} Liberals, ${numFascists} Fascist${numFascists > 1 ? 's' : ''}, 1 Secret Hitler). Deck shuffled: 6 Liberal & 11 Fascist policies.`,
       'system'
     );
     this.addLog(`${this.players[this.presidentIndex].name} holds the opening Presidential placard.`, 'election');
@@ -256,6 +267,39 @@ export class GameEngine {
     return { success: true };
   }
 
+  /**
+   * Resolve a quick Table Vote (Approved / Rejected around the table in person).
+   * Does NOT populate individual ballot breakdown (`lastVoteDetails = null`, `lastRevealedVotes = {}`).
+   */
+  resolveTableVote(passed: boolean): {
+    success: boolean;
+    error?: string;
+    passed?: boolean;
+    chaos?: boolean;
+    chaosPolicy?: Policy;
+    hitlerCheck?: HitlerSuspenseCheck;
+    deckReshuffled?: boolean;
+    gameOver?: boolean;
+    winner?: 'LIBERAL' | 'FASCIST';
+    winReason?: string;
+  } {
+    if (this.phase !== 'VOTING') {
+      return { success: false, error: 'Not in voting phase' };
+    }
+
+    this.lastVotePassed = passed;
+    this.lastRevealedVotes = {};
+    this.lastVoteDetails = null;
+    this.votes = {};
+
+    this.addLog(
+      `Table vote result: ${passed ? 'GOVERNMENT ELECTED' : 'VOTE REJECTED'}.`,
+      'election'
+    );
+
+    return this.finalizeElectionOutcome(passed, false);
+  }
+
   castVote(playerId: string, vote: Vote): {
     success: boolean;
     error?: string;
@@ -263,9 +307,12 @@ export class GameEngine {
     votesIn?: number;
     votesNeeded?: number;
     votes?: Record<string, Vote>;
+    lastVoteDetails?: LastVoteDetails | null;
     passed?: boolean;
     chaos?: boolean;
     chaosPolicy?: Policy;
+    hitlerCheck?: HitlerSuspenseCheck;
+    deckReshuffled?: boolean;
     gameOver?: boolean;
     winner?: 'LIBERAL' | 'FASCIST';
     winReason?: string;
@@ -306,6 +353,24 @@ export class GameEngine {
     this.lastVotePassed = passed;
     this.lastRevealedVotes = { ...this.votes };
 
+    const presidentName = this.players[this.presidentIndex]?.name || 'President';
+    const chancellorPlayer = this.chancellorIndex !== null ? this.players[this.chancellorIndex] : null;
+    const chancellorName = chancellorPlayer?.name || 'Chancellor';
+
+    this.lastVoteDetails = {
+      roundNumber: this.roundNumber,
+      presidentName,
+      chancellorName,
+      passed,
+      jaCount,
+      neinCount,
+      ballots: alivePlayers.map((p) => ({
+        playerId: p.id,
+        playerName: p.name,
+        vote: this.votes[p.id],
+      })),
+    };
+
     const voteSummary = alivePlayers
       .map((p) => `${p.name}: ${this.votes[p.id]}`)
       .join(', ');
@@ -314,18 +379,53 @@ export class GameEngine {
       'election'
     );
 
+    return this.finalizeElectionOutcome(passed, true);
+  }
+
+  private finalizeElectionOutcome(
+    passed: boolean,
+    includeIndividualVotes: boolean
+  ): {
+    success: boolean;
+    passed: boolean;
+    votes?: Record<string, Vote>;
+    lastVoteDetails?: LastVoteDetails | null;
+    chaos?: boolean;
+    chaosPolicy?: Policy;
+    hitlerCheck?: HitlerSuspenseCheck;
+    deckReshuffled?: boolean;
+    gameOver?: boolean;
+    winner?: 'LIBERAL' | 'FASCIST';
+    winReason?: string;
+  } {
+    const chancellorPlayer = this.chancellorIndex !== null ? this.players[this.chancellorIndex] : null;
+    const votesCopy = includeIndividualVotes ? { ...this.lastRevealedVotes } : {};
+    const detailsCopy = includeIndividualVotes ? this.lastVoteDetails : null;
+
     if (passed) {
       this.electionTracker = 0;
 
-      if (this.fascistPolicies >= 3 && this.players[this.chancellorIndex!].role === 'HITLER') {
+      // Only reveals whether elected Chancellor is Hitler or Not Hitler (no party info!)
+      let hitlerCheck: HitlerSuspenseCheck | undefined;
+      if (this.fascistPolicies >= 3 && chancellorPlayer) {
+        hitlerCheck = {
+          targetName: chancellorPlayer.name,
+          context: 'CHANCELLOR_ELECTED',
+          isHitler: chancellorPlayer.role === 'HITLER',
+        };
+      }
+
+      if (this.fascistPolicies >= 3 && chancellorPlayer && chancellorPlayer.role === 'HITLER') {
         this.winner = 'FASCIST';
         this.winReason = 'Hitler was elected Chancellor after 3 Fascist policies were enacted!';
         this.phase = 'GAME_OVER';
-        this.addLog(`FASCISTS WIN! Hitler (${this.players[this.chancellorIndex!].name}) was elected Chancellor!`, 'system');
+        this.addLog(`FASCISTS WIN! Hitler (${chancellorPlayer.name}) was elected Chancellor!`, 'system');
         return {
           success: true,
           passed: true,
-          votes: { ...this.lastRevealedVotes },
+          votes: votesCopy,
+          lastVoteDetails: detailsCopy,
+          hitlerCheck,
           gameOver: true,
           winner: 'FASCIST',
           winReason: this.winReason,
@@ -335,7 +435,7 @@ export class GameEngine {
       this.previousPresidentIndex = this.presidentIndex;
       this.previousChancellorIndex = this.chancellorIndex;
 
-      this.checkDeckReshuffle();
+      const deckReshuffled = this.checkDeckReshuffle();
 
       this.currentPresidentCards = [this.drawDeck.pop()!, this.drawDeck.pop()!, this.drawDeck.pop()!];
       this.phase = 'LEGISLATIVE_PRESIDENT';
@@ -348,18 +448,20 @@ export class GameEngine {
       return {
         success: true,
         passed: true,
-        votes: { ...this.lastRevealedVotes },
+        votes: votesCopy,
+        lastVoteDetails: detailsCopy,
+        hitlerCheck,
+        deckReshuffled,
       };
     } else {
-      const revealedVotes = { ...this.lastRevealedVotes };
       this.electionTracker++;
       this.addLog(`Government rejected. Election tracker advanced to ${this.electionTracker}/3.`, 'election');
 
       if (this.electionTracker >= 3) {
         this.addLog(`CHAOS! Three consecutive governments failed. Enacting top policy from deck!`, 'chaos');
-        this.checkDeckReshuffle();
+        const reshuffledBeforeChaos = this.checkDeckReshuffle();
         const chaosPolicy = this.drawDeck.pop()!;
-        this.enactPolicyDirectly(chaosPolicy);
+        const reshuffledAfterChaos = this.enactPolicyDirectly(chaosPolicy);
         this.electionTracker = 0;
 
         this.previousPresidentIndex = null;
@@ -371,7 +473,9 @@ export class GameEngine {
             passed: false,
             chaos: true,
             chaosPolicy,
-            votes: revealedVotes,
+            votes: votesCopy,
+            lastVoteDetails: detailsCopy,
+            deckReshuffled: reshuffledBeforeChaos || reshuffledAfterChaos,
             gameOver: true,
             winner: this.winner,
             winReason: this.winReason!,
@@ -386,7 +490,9 @@ export class GameEngine {
           passed: false,
           chaos: true,
           chaosPolicy,
-          votes: revealedVotes,
+          votes: votesCopy,
+          lastVoteDetails: detailsCopy,
+          deckReshuffled: reshuffledBeforeChaos || reshuffledAfterChaos,
         };
       }
 
@@ -396,19 +502,28 @@ export class GameEngine {
       return {
         success: true,
         passed: false,
-        votes: revealedVotes,
+        votes: votesCopy,
+        lastVoteDetails: detailsCopy,
       };
     }
   }
 
-  checkDeckReshuffle() {
+  checkDeckReshuffle(): boolean {
     if (this.drawDeck.length < 3) {
+      const remainingDraw = this.drawDeck.length;
+      const discardedCount = this.discardPile.length;
       const reshuffled = [...this.drawDeck, ...this.discardPile];
       this.shuffle(reshuffled);
       this.drawDeck = reshuffled;
       this.discardPile = [];
-      this.addLog(`Policy draw deck had fewer than 3 tiles; reshuffled with discard pile (${this.drawDeck.length} tiles).`, 'system');
+      this.reshuffleCount++;
+      this.addLog(
+        `Policy draw pile had ${remainingDraw} tile${remainingDraw === 1 ? '' : 's'} (< 3); reshuffled with ${discardedCount} discarded tile${discardedCount === 1 ? '' : 's'} to form a new ${this.drawDeck.length}-tile Draw Pile.`,
+        'system'
+      );
+      return true;
     }
+    return false;
   }
 
   presidentDiscard(playerId: string, cardIndex: number): { success: boolean; error?: string } {
@@ -444,6 +559,7 @@ export class GameEngine {
     error?: string;
     policy?: Policy;
     executiveAction?: ExecutiveAction;
+    deckReshuffled?: boolean;
     gameOver?: boolean;
     winner?: 'LIBERAL' | 'FASCIST';
     winReason?: string;
@@ -466,7 +582,7 @@ export class GameEngine {
     return this.enactPolicyByGovernment(enacted);
   }
 
-  enactPolicyDirectly(policy: Policy) {
+  enactPolicyDirectly(policy: Policy): boolean {
     if (policy === 'LIBERAL') {
       this.liberalPolicies++;
       this.addLog(`Chaos enacted a LIBERAL Policy! (${this.liberalPolicies}/5)`, 'chaos');
@@ -476,17 +592,28 @@ export class GameEngine {
     }
 
     this.checkWinConditions();
-    this.checkDeckReshuffle();
+    return this.checkDeckReshuffle();
   }
 
   enactPolicyByGovernment(policy: Policy): {
     success: boolean;
     policy: Policy;
     executiveAction: ExecutiveAction;
+    deckReshuffled?: boolean;
     gameOver?: boolean;
     winner?: 'LIBERAL' | 'FASCIST';
     winReason?: string;
   } {
+    // Record this enacted policy in both the sitting President's and Chancellor's government history
+    const sittingPres = this.players[this.presidentIndex];
+    const sittingChan = this.chancellorIndex !== null ? this.players[this.chancellorIndex] : null;
+    if (sittingPres) {
+      sittingPres.governmentHistory.push(policy);
+    }
+    if (sittingChan) {
+      sittingChan.governmentHistory.push(policy);
+    }
+
     if (policy === 'LIBERAL') {
       this.liberalPolicies++;
       this.addLog(`Government enacted a LIBERAL Policy! (${this.liberalPolicies}/5)`, 'policy');
@@ -514,7 +641,7 @@ export class GameEngine {
       action = this.getExecutivePowerForFascistSlot(this.fascistPolicies);
     }
 
-    this.checkDeckReshuffle();
+    const deckReshuffled = this.checkDeckReshuffle();
 
     if (action !== 'NONE') {
       this.executiveAction = action;
@@ -527,6 +654,7 @@ export class GameEngine {
         success: true,
         policy,
         executiveAction: action,
+        deckReshuffled,
       };
     }
 
@@ -537,6 +665,7 @@ export class GameEngine {
       success: true,
       policy,
       executiveAction: 'NONE',
+      deckReshuffled,
     };
   }
 
@@ -611,6 +740,7 @@ export class GameEngine {
     chaos?: boolean;
     policy?: Policy;
     electionTracker?: number;
+    deckReshuffled?: boolean;
     gameOver?: boolean;
     winner?: 'LIBERAL' | 'FASCIST';
     winReason?: string;
@@ -635,9 +765,9 @@ export class GameEngine {
 
       if (this.electionTracker >= 3) {
         this.addLog(`CHAOS! Veto pushed the Election Tracker to 3/3!`, 'chaos');
-        this.checkDeckReshuffle();
+        const reshuffledBefore = this.checkDeckReshuffle();
         const chaosPolicy = this.drawDeck.pop()!;
-        this.enactPolicyDirectly(chaosPolicy);
+        const reshuffledAfter = this.enactPolicyDirectly(chaosPolicy);
         this.electionTracker = 0;
         this.previousPresidentIndex = null;
         this.previousChancellorIndex = null;
@@ -648,6 +778,7 @@ export class GameEngine {
             vetoed: true,
             chaos: true,
             policy: chaosPolicy,
+            deckReshuffled: reshuffledBefore || reshuffledAfter,
             gameOver: true,
             winner: this.winner,
             winReason: this.winReason!,
@@ -662,9 +793,11 @@ export class GameEngine {
           vetoed: true,
           chaos: true,
           policy: chaosPolicy,
+          deckReshuffled: reshuffledBefore || reshuffledAfter,
         };
       }
 
+      const deckReshuffled = this.checkDeckReshuffle();
       this.advancePresidentClockwise();
       this.advanceToNomination();
 
@@ -672,6 +805,7 @@ export class GameEngine {
         success: true,
         vetoed: true,
         electionTracker: this.electionTracker,
+        deckReshuffled,
       };
     } else {
       this.vetoRequestedByChancellor = false;
@@ -823,6 +957,7 @@ export class GameEngine {
     success: boolean;
     error?: string;
     killed?: string;
+    hitlerCheck?: HitlerSuspenseCheck;
     gameOver?: boolean;
     winner?: 'LIBERAL' | 'FASCIST';
     winReason?: string;
@@ -847,6 +982,13 @@ export class GameEngine {
     target.isAlive = false;
     this.executiveAction = 'NONE';
 
+    // Suspense check only reveals whether the killed player is Hitler or Not Hitler (no party info!)
+    const hitlerCheck: HitlerSuspenseCheck = {
+      targetName: target.name,
+      context: 'PLAYER_EXECUTED',
+      isHitler: target.role === 'HITLER',
+    };
+
     this.addLog(
       `President ${this.players[this.presidentIndex].name} formally executed ${target.name}!`,
       'executive'
@@ -861,13 +1003,14 @@ export class GameEngine {
       return {
         success: true,
         killed: target.name,
+        hitlerCheck,
         gameOver: true,
         winner: 'LIBERAL',
         winReason: this.winReason,
       };
     }
 
-    this.addLog(`${target.name} was not Hitler. Their role remains secret.`, 'system');
+    this.addLog(`${target.name} was not Hitler. Their party affiliation remains secret.`, 'system');
 
     this.advancePresidentClockwise();
     this.advanceToNomination();
@@ -875,6 +1018,7 @@ export class GameEngine {
     return {
       success: true,
       killed: target.name,
+      hitlerCheck,
       gameOver: false,
     };
   }
@@ -927,6 +1071,7 @@ export class GameEngine {
       investigatedByPresident: this.investigatedPlayerIds.has(p.id),
       hasVoted: this.phase === 'VOTING' ? Boolean(this.votes[p.id]) : false,
       isBot: p.isBot,
+      governmentHistory: [...p.governmentHistory],
     }));
 
     return {
@@ -937,6 +1082,7 @@ export class GameEngine {
       electionTracker: this.electionTracker,
       deckCount: this.drawDeck.length,
       discardCount: this.discardPile.length,
+      reshuffleCount: this.reshuffleCount,
       inHandCount: this.currentPresidentCards.length + this.currentChancellorCards.length,
       presidentIndex: this.presidentIndex,
       chancellorIndex: this.chancellorIndex,
@@ -945,6 +1091,7 @@ export class GameEngine {
       eligibleChancellors: this.phase === 'NOMINATION' ? this.getEligibleChancellors() : [],
       votes: this.phase === 'VOTING' ? {} : { ...this.lastRevealedVotes },
       lastVotePassed: this.lastVotePassed,
+      lastVoteDetails: this.lastVoteDetails,
       executiveAction: this.executiveAction,
       specialElectionReturnIndex: this.specialElectionReturnIndex,
       vetoUnlocked: this.fascistPolicies >= 5,
@@ -964,10 +1111,29 @@ export class GameEngine {
     return res;
   }
 
+  private cryptoRandomInt(max: number): number {
+    if (max <= 1) return 0;
+    const cryptoObj = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
+    if (cryptoObj && typeof cryptoObj.getRandomValues === 'function') {
+      const range = 0x100000000;
+      const limit = range - (range % max);
+      const buf = new Uint32Array(1);
+      let val = 0;
+      do {
+        cryptoObj.getRandomValues(buf);
+        val = buf[0];
+      } while (val >= limit);
+      return val % max;
+    }
+    return Math.floor(Math.random() * max);
+  }
+
   private shuffle<T>(array: T[]) {
-    for (let i = array.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [array[i], array[j]] = [array[j], array[i]];
+    for (let pass = 0; pass < 3; pass++) {
+      for (let i = array.length - 1; i > 0; i--) {
+        const j = this.cryptoRandomInt(i + 1);
+        [array[i], array[j]] = [array[j], array[i]];
+      }
     }
   }
 }

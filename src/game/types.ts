@@ -24,6 +24,7 @@ export interface Player {
   party: Party;
   isAlive: boolean;
   isBot?: boolean;
+  governmentHistory: Policy[];
 }
 
 export interface Spectator {
@@ -42,6 +43,7 @@ export interface PublicPlayer {
   investigatedByPresident?: boolean;
   hasVoted?: boolean;
   isBot?: boolean;
+  governmentHistory: Policy[];
 }
 
 export interface NightInfo {
@@ -68,6 +70,28 @@ export interface AgentCheckResult {
   details: string[];
 }
 
+export interface VoteBallotEntry {
+  playerId: string;
+  playerName: string;
+  vote: Vote;
+}
+
+export interface LastVoteDetails {
+  roundNumber: number;
+  presidentName: string;
+  chancellorName: string;
+  passed: boolean;
+  jaCount: number;
+  neinCount: number;
+  ballots: VoteBallotEntry[];
+}
+
+export interface HitlerSuspenseCheck {
+  targetName: string;
+  context: 'CHANCELLOR_ELECTED' | 'PLAYER_EXECUTED';
+  isHitler: boolean;
+}
+
 export interface PublicGameState {
   phase: Phase;
   roundNumber: number;
@@ -76,6 +100,7 @@ export interface PublicGameState {
   electionTracker: number; // 0, 1, 2 (3 triggers chaos)
   deckCount: number;
   discardCount: number;
+  reshuffleCount: number;
   inHandCount: number;
   presidentIndex: number;
   chancellorIndex: number | null;
@@ -84,6 +109,7 @@ export interface PublicGameState {
   eligibleChancellors: number[];
   votes: Record<string, Vote>;
   lastVotePassed: boolean | null;
+  lastVoteDetails: LastVoteDetails | null;
   executiveAction: ExecutiveAction;
   specialElectionReturnIndex: number | null;
   vetoUnlocked: boolean;

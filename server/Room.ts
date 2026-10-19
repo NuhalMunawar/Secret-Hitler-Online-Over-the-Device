@@ -324,6 +324,7 @@ export class Room {
               policy: result.policy,
               state: this.game.getPublicState(),
               executiveAction: result.executiveAction,
+              deckReshuffled: result.deckReshuffled,
             });
             if (result.executiveAction === 'PEEK') {
               const pres = this.game.players[this.game.presidentIndex];
@@ -367,6 +368,7 @@ export class Room {
               onUpdate('veto-accepted', {
                 state: this.game.getPublicState(),
                 electionTracker: res.electionTracker,
+                deckReshuffled: res.deckReshuffled,
               });
             }
           } else if (res.vetoRejected) {
@@ -437,10 +439,12 @@ export class Room {
                   winner: killRes.winner,
                   winReason: killRes.winReason,
                   roles: this.game.getAllRoles(),
+                  hitlerCheck: killRes.hitlerCheck,
                 });
               } else {
                 onUpdate('player-executed', {
                   killed: killRes.killed,
+                  hitlerCheck: killRes.hitlerCheck,
                   state: this.game.getPublicState(),
                 });
                 this.handleBotTurns(onUpdate);
@@ -464,6 +468,8 @@ export class Room {
         winner: result.winner,
         winReason: result.winReason,
         roles: this.game.getAllRoles(),
+        hitlerCheck: result.hitlerCheck,
+        votes: result.votes,
       });
       return;
     }
@@ -474,6 +480,7 @@ export class Room {
         votes: result.votes,
         chaos: true,
         chaosPolicy: result.chaosPolicy,
+        deckReshuffled: result.deckReshuffled,
         state: this.game.getPublicState(),
       });
       this.handleBotTurns(onUpdate);
@@ -483,6 +490,8 @@ export class Room {
     onUpdate('election-result', {
       passed: result.passed,
       votes: result.votes,
+      hitlerCheck: result.hitlerCheck,
+      deckReshuffled: result.deckReshuffled,
       state: this.game.getPublicState(),
     });
 

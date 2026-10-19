@@ -6,7 +6,6 @@ import { LiberalDoveSVG, FascistSkullSVG, PolicyTileGraphic } from './Artwork.js
 interface PolicyTracksProps {
   liberalPolicies: number;
   fascistPolicies: number;
-  electionTracker: number;
   deckCount: number;
   discardCount: number;
   playerCount: number;
@@ -15,7 +14,6 @@ interface PolicyTracksProps {
 export const PolicyTracks: React.FC<PolicyTracksProps> = ({
   liberalPolicies,
   fascistPolicies,
-  electionTracker,
   deckCount,
   discardCount,
   playerCount,
@@ -195,67 +193,28 @@ export const PolicyTracks: React.FC<PolicyTracksProps> = ({
         </div>
       </div>
 
-      {/* BOTTOM STRIP: ELECTION TRACKER & DRAW/DISCARD PILES */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Election Tracker */}
-        <div className="p-4 rounded-lg bg-[#181411] border border-[#332a24] flex items-center justify-between gap-4">
+      {/* POLICY DECK & DISCARD PILE */}
+      <div className="p-4 rounded-lg bg-[#181411] border border-[#332a24] flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2.5">
+          <Layers className="w-5 h-5 text-[#d4a359] shrink-0" />
           <div>
-            <div className="text-sm font-woodcut tracking-wider uppercase text-[#d4a359]">
-              Election Tracker
+            <div className="text-sm font-woodcut tracking-wider uppercase text-[#f4efe6]">
+              Policy Deck &amp; Discard
             </div>
             <div className="text-xs text-[#a89f91]">
-              3 rejected governments in a row enacts the top policy in Chaos
+              17 tiles (6 Liberal · 11 Fascist) · Reshuffles discard when Draw &lt; 3
             </div>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            {[0, 1, 2, 3].map((step) => {
-              const isActive = electionTracker === step;
-              const isChaos = step === 3;
-
-              return (
-                <div
-                  key={`tracker-${step}`}
-                  className={`w-8 h-8 rounded-full flex items-center justify-center font-mono-numbers text-xs font-bold transition-all border ${
-                    isActive
-                      ? isChaos
-                        ? 'bg-[#c83228] text-[#f4efe6] border-[#ffd2c9]'
-                        : 'bg-[#d4a359] text-[#12100e] border-[#f4efe6]'
-                      : isChaos
-                      ? 'bg-[#1f1311] text-[#e86f5c] border-[#59221d]'
-                      : 'bg-[#120f0d] text-[#a89f91] border-[#332a24]'
-                  }`}
-                >
-                  {isChaos ? '3!' : step}
-                </div>
-              );
-            })}
           </div>
         </div>
 
-        {/* Policy Deck & Discard Pile */}
-        <div className="p-4 rounded-lg bg-[#181411] border border-[#332a24] flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2.5">
-            <Layers className="w-5 h-5 text-[#d4a359] shrink-0" />
-            <div>
-              <div className="text-sm font-woodcut tracking-wider uppercase text-[#f4efe6]">
-                Policy Deck & Discard
-              </div>
-              <div className="text-xs text-[#a89f91]">
-                17 tiles total (6 Liberal · 11 Fascist)
-              </div>
-            </div>
+        <div className="flex items-center gap-4 shrink-0">
+          <div className="text-right">
+            <span className="text-[10px] uppercase text-[#a89f91] block font-mono-numbers">Draw Pile</span>
+            <span className="font-mono-numbers font-bold text-base text-[#d4a359]">{deckCount}</span>
           </div>
-
-          <div className="flex items-center gap-4 shrink-0">
-            <div className="text-right">
-              <span className="text-[10px] uppercase text-[#a89f91] block font-mono-numbers">Draw Pile</span>
-              <span className="font-mono-numbers font-bold text-base text-[#d4a359]">{deckCount}</span>
-            </div>
-            <div className="text-right border-l border-[#332a24] pl-4">
-              <span className="text-[10px] uppercase text-[#a89f91] block font-mono-numbers">Discard</span>
-              <span className="font-mono-numbers font-bold text-base text-[#f4efe6]">{discardCount}</span>
-            </div>
+          <div className="text-right border-l border-[#332a24] pl-4">
+            <span className="text-[10px] uppercase text-[#a89f91] block font-mono-numbers">Discard</span>
+            <span className="font-mono-numbers font-bold text-base text-[#f4efe6]">{discardCount}</span>
           </div>
         </div>
       </div>

@@ -5,18 +5,17 @@ import { Header } from './components/Header.js';
 import { LobbyView } from './components/LobbyView.js';
 import { PolicyTracks } from './components/PolicyTracks.js';
 import { PlayerRoster } from './components/PlayerRoster.js';
-import { ActionStage } from './components/ActionStage.js';
+import { CurrentTab } from './components/ActionStage.js';
 import { NightModal } from './components/NightModal.js';
 import { GameOverModal } from './components/GameOverModal.js';
 import { RulesModal } from './components/RulesModal.js';
-import { DiagnosticsModal } from './components/DiagnosticsModal.js';
+import { ChancellorSuspenseModal } from './components/ChancellorSuspenseModal.js';
 import { GameLog } from './components/GameLog.js';
-import { AlertCircle, CheckCircle, Info, Eye, Smartphone } from 'lucide-react';
+import { AlertCircle, CheckCircle, Info } from 'lucide-react';
 
 export default function App() {
   const [rulesOpen, setRulesOpen] = useState(false);
   const [identityOpen, setIdentityOpen] = useState(false);
-  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [localVote, setLocalVote] = useState<'JA' | 'NEIN' | null>(null);
 
   const online = useGameSocket();
@@ -46,9 +45,8 @@ export default function App() {
   const hasGameActive = Boolean(activeGameState && activeGameState.phase !== 'LOBBY');
 
   // Compute Night Modal props for Online vs Offline Pass & Play
-  const humanPlayersInOffline = isOffline && activeGameState
-    ? activeGameState.players.filter((p) => !p.isBot)
-    : [];
+  const humanPlayersInOffline =
+    isOffline && activeGameState ? activeGameState.players.filter((p) => !p.isBot) : [];
   const currentOfflineNightPlayer =
     isOffline && activeGameState ? activeGameState.players[offline.nightPlayerIndex] : null;
   const offlineNightStepIndex =
@@ -66,6 +64,10 @@ export default function App() {
     ? currentOfflineNightPlayer?.name || ''
     : online.playerName;
 
+  const activeChancellorSuspense = isOffline
+    ? offline.chancellorSuspenseCheck
+    : online.chancellorSuspenseCheck;
+
   const activeGameOverData = isOffline ? offline.gameOverData : online.gameOverData;
 
   return (
@@ -77,7 +79,6 @@ export default function App() {
         isSpectator={activeIsSpectator}
         onOpenRules={() => setRulesOpen(true)}
         onOpenDossier={() => setIdentityOpen(true)}
-        onOpenDiagnostics={() => setDiagnosticsOpen(true)}
         onLeaveRoom={isOffline ? offline.exitOfflineMode : online.leaveRoom}
         hasRole={Boolean(online.nightInfo || isOffline)}
       />
@@ -123,67 +124,22 @@ export default function App() {
             onStartGame={online.startGame}
             onStartOfflineGame={offline.startOfflineGame}
             onOpenRules={() => setRulesOpen(true)}
-            onOpenDiagnostics={() => setDiagnosticsOpen(true)}
           />
         ) : (
           <div className="space-y-6 animate-fade-in">
-            {/* Round & Phase Status Strip */}
-            <div className="bg-[#181411] border border-[#2e2621] rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-xs">
-              <div className="flex items-center gap-3">
-                <span className="font-mono-numbers uppercase text-[#d4a359] font-bold tracking-wider">
-                  Round {activeGameState!.roundNumber}
-                </span>
-                <span className="text-[#453930]">|</span>
-                <span className="font-woodcut text-sm uppercase tracking-wider text-[#f4efe6]">
-                  {activeGameState!.phase.replace(/_/g, ' ')}
-                </span>
-                {isOffline && (
-                  <>
-                    <span className="text-[#453930]">|</span>
-                    <span className="text-[#d4a359] flex items-center gap-1 font-mono-numbers uppercase">
-                      <Smartphone className="w-3.5 h-3.5" /> Pass & Play
-                    </span>
-                  </>
-                )}
-                {activeIsSpectator && (
-                  <>
-                    <span className="text-[#453930]">|</span>
-                    <span className="text-[#d4a359] flex items-center gap-1 font-mono-numbers uppercase">
-                      <Eye className="w-3.5 h-3.5" /> Spectating Only
-                    </span>
-                  </>
-                )}
-              </div>
-
-              <div className="flex items-center gap-4 text-xs text-[#d6cfc2] font-mono-numbers">
-                <span>
-                  President:{' '}
-                  <strong className="text-[#d4a359]">
-                    {activeGameState!.players[activeGameState!.presidentIndex]?.name}
-                  </strong>
-                </span>
-                {activeGameState!.chancellorIndex !== null && (
-                  <span>
-                    Chancellor:{' '}
-                    <strong className="text-[#76c4de]">
-                      {activeGameState!.players[activeGameState!.chancellorIndex]?.name}
-                    </strong>
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* Interactive Action Stage */}
-            <ActionStage
+            {/* currentTab: Primary Action Focal Section (with Election Tracker right below Nominate Chancellor) */}
+            <CurrentTab
               phase={activeGameState!.phase}
               players={activeGameState!.players}
               currentUserId={activePlayerId}
               isSpectator={activeIsSpectator}
               presidentIndex={activeGameState!.presidentIndex}
               chancellorIndex={activeGameState!.chancellorIndex}
+              electionTracker={activeGameState!.electionTracker}
               eligibleChancellors={activeGameState!.eligibleChancellors}
               userVote={localVote}
               voteProgress={isOffline ? null : online.voteProgress}
+              lastVoteDetails={activeGameState!.lastVoteDetails}
               presidentCards={isOffline ? offline.presidentCards : online.presidentCards}
               chancellorCards={isOffline ? offline.chancellorCards : online.chancellorCards}
               canVeto={isOffline ? offline.canVeto : online.canVeto}
@@ -220,7 +176,6 @@ export default function App() {
             <PolicyTracks
               liberalPolicies={activeGameState!.liberalPolicies}
               fascistPolicies={activeGameState!.fascistPolicies}
-              electionTracker={activeGameState!.electionTracker}
               deckCount={activeGameState!.deckCount}
               discardCount={activeGameState!.discardCount}
               playerCount={activeGameState!.players.length}
@@ -247,14 +202,6 @@ export default function App() {
 
       {/* Rulebook Modal */}
       <RulesModal isOpen={rulesOpen} onClose={() => setRulesOpen(false)} />
-
-      {/* Rule Verification Agents Modal */}
-      <DiagnosticsModal
-        isOpen={diagnosticsOpen}
-        onClose={() => setDiagnosticsOpen(false)}
-        liveState={activeGameState}
-        onRequestServerDiagnostics={isOffline ? undefined : online.runServerDiagnostics}
-      />
 
       {/* Secret Envelope Modal */}
       <NightModal
@@ -285,8 +232,16 @@ export default function App() {
         getOfflineNightInfo={offline.getNightInfoForPlayerId}
       />
 
-      {/* Game Over Modal */}
-      {activeGameOverData && (
+      {/* High-Stakes Hitler Suspense Check Modal (Chancellor Election at 3+ Fascist & Player Execution) */}
+      <ChancellorSuspenseModal
+        check={activeChancellorSuspense}
+        onDismiss={
+          isOffline ? offline.dismissChancellorSuspense : online.dismissChancellorSuspense
+        }
+      />
+
+      {/* Game Over Modal (waits until ChancellorSuspenseModal is dismissed if triggered) */}
+      {activeGameOverData && !activeChancellorSuspense && (
         <GameOverModal
           isOpen={true}
           winner={activeGameOverData.winner}

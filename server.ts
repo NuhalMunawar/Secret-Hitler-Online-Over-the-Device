@@ -353,6 +353,8 @@ io.on('connection', (socket: Socket) => {
         winner: res.winner,
         winReason: res.winReason,
         roles: game.getAllRoles(),
+        hitlerCheck: res.hitlerCheck,
+        votes: res.votes,
       });
       return;
     }
@@ -363,6 +365,7 @@ io.on('connection', (socket: Socket) => {
         votes: res.votes,
         chaos: true,
         chaosPolicy: res.chaosPolicy,
+        deckReshuffled: res.deckReshuffled,
         state: game.getPublicState(),
       });
       room.handleBotTurns((evt, data) => broadcastRoomUpdate(room, evt, data));
@@ -372,6 +375,8 @@ io.on('connection', (socket: Socket) => {
     io.to(room.code).emit('election-result', {
       passed: res.passed,
       votes: res.votes,
+      hitlerCheck: res.hitlerCheck,
+      deckReshuffled: res.deckReshuffled,
       state: game.getPublicState(),
     });
 
@@ -443,6 +448,7 @@ io.on('connection', (socket: Socket) => {
       policy: res.policy,
       state: game.getPublicState(),
       executiveAction: res.executiveAction,
+      deckReshuffled: res.deckReshuffled,
     });
 
     if (res.executiveAction === 'PEEK') {
@@ -613,10 +619,12 @@ io.on('connection', (socket: Socket) => {
         winner: res.winner,
         winReason: res.winReason,
         roles: game.getAllRoles(),
+        hitlerCheck: res.hitlerCheck,
       });
     } else {
       io.to(room.code).emit('player-executed', {
         killed: res.killed,
+        hitlerCheck: res.hitlerCheck,
         state: game.getPublicState(),
       });
       io.to(room.code).emit('state-update', {

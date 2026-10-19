@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { GameEngine } from '../game/GameEngine.js';
-import { NightInfo, Policy, PublicGameState, Vote } from '../game/types.js';
+import { HitlerSuspenseCheck, NightInfo, Policy, PublicGameState, Vote } from '../game/types.js';
 import { sound } from '../utils/sound.js';
 
 export interface OfflinePlayerEntry {
@@ -25,12 +25,8 @@ export function useOfflineGame(
   const [gameState, setGameState] = useState<PublicGameState | null>(null);
 
   // Privacy & Pass-Device state
-  // During NIGHT phase, each human player inspects their envelope in sequence [0..N-1]
   const [nightPlayerIndex, setNightPlayerIndex] = useState<number>(0);
-  // Whether the current active player has confirmed "I have the device" for secret actions
   const [privacyUnlocked, setPrivacyUnlocked] = useState<boolean>(false);
-
-  // During VOTING phase, track which human player is currently holding the device to vote
   const [currentVoterIndex, setCurrentVoterIndex] = useState<number>(0);
 
   // Investigation result secret state for President
@@ -47,6 +43,10 @@ export function useOfflineGame(
     chaos?: boolean;
     chaosPolicy?: Policy;
   } | null>(null);
+
+  // Hitler Suspense Check (for Chancellor elected at 3+ Fascist or Player executed)
+  const [chancellorSuspenseCheck, setChancellorSuspenseCheck] =
+    useState<HitlerSuspenseCheck | null>(null);
 
   // Game Over data
   const [gameOverData, setGameOverData] = useState<{
@@ -72,13 +72,14 @@ export function useOfflineGame(
           if (elig.length > 0) {
             const pick = elig[Math.floor(Math.random() * elig.length)];
             eng.nominateChancellor(pick);
-            // Have all bots vote immediately
             for (const p of eng.players) {
               if (p.isAlive && p.isBot) {
                 eng.castVote(p.id, Math.random() < 0.7 ? 'JA' : 'NEIN');
               }
             }
-            const firstHumanIdx = eng.players.findIndex((p) => p.isAlive && !p.isBot && !eng.votes[p.id]);
+            const firstHumanIdx = eng.players.findIndex(
+              (p) => p.isAlive && !p.isBot && !eng.votes[p.id]
+            );
             setCurrentVoterIndex(firstHumanIdx !== -1 ? firstHumanIdx : 0);
             setPrivacyUnlocked(false);
             syncEngineState(eng);
@@ -118,6 +119,9 @@ export function useOfflineGame(
           const res = eng.chancellorDiscard(chan.id, discardIdx);
           setPrivacyUnlocked(false);
           syncEngineState(eng);
+          if (res.deckReshuffled) {
+            setTimeout(() => sound.playCardShuffle(), 450);
+          }
           if (res.gameOver && res.winner) {
             sound.playVictory(res.winner);
             setGameOverData({
@@ -128,7 +132,10 @@ export function useOfflineGame(
           } else {
             if (res.policy === 'LIBERAL') sound.playLiberalPolicy();
             else sound.playFascistPolicy();
-            showNotification(`A ${res.policy} Policy has been enacted!`, res.policy === 'LIBERAL' ? 'success' : 'alert');
+            showNotification(
+              `A ${res.policy} Policy has been enacted!`,
+              res.policy === 'LIBERAL' ? 'success' : 'alert'
+            );
             processBotActions(eng);
           }
         }
@@ -166,8 +173,13 @@ export function useOfflineGame(
             if (targets.length > 0) {
               const target = targets[Math.floor(Math.random() * targets.length)];
               const killRes = eng.executeKill(pres.id, target);
+              if (killRes.hitlerCheck) {
+                setChancellorSuspenseCheck(killRes.hitlerCheck);
+              }
               if (killRes.gameOver && killRes.winner) {
-                sound.playVictory(killRes.winner);
+                if (!killRes.hitlerCheck) {
+                  sound.playVictory(killRes.winner);
+                }
                 setGameOverData({
                   winner: killRes.winner,
                   winReason: killRes.winReason || '',
@@ -189,7 +201,9 @@ export function useOfflineGame(
   );
 
   // Start Offline Pass-and-Play Game
-  const startOfflineGame = (customPlayers: OfflinePlayerEntry[]): { success: boolean; error?: string } => {
+  const startOfflineGame = (
+    customPlayers: OfflinePlayerEntry[]
+  ): { success: boolean; error?: string } => {
     const cleaned = customPlayers
       .map((p, idx) => ({
         id: p.id || `off_${idx + 1}`,
@@ -199,13 +213,15 @@ export function useOfflineGame(
       .filter((p) => p.name.length > 0);
 
     if (cleaned.length < 5) {
-      return { success: false, error: `Need at least 5 players to start (currently ${cleaned.length}).` };
+      return {
+        success: false,
+        error: `Need at least 5 players to start (currently ${cleaned.length}).`,
+      };
     }
     if (cleaned.length > 10) {
       return { success: false, error: 'Maximum 10 players allowed.' };
     }
 
-    // Check duplicate names
     const lowerNames = cleaned.map((p) => p.name.toLowerCase());
     if (new Set(lowerNames).size !== lowerNames.length) {
       return { success: false, error: 'Each player must have a unique name.' };
@@ -223,8 +239,8 @@ export function useOfflineGame(
     setGameOverData(null);
     setLastElectionVotes(null);
     setInvestigationResult(null);
+    setChancellorSuspenseCheck(null);
 
-    // Find first human player for Night Phase envelope inspection
     const firstHuman = newEngine.players.findIndex((p) => !p.isBot);
     if (firstHuman !== -1) {
       setNightPlayerIndex(firstHuman);
@@ -236,8 +252,11 @@ export function useOfflineGame(
       processBotActions(newEngine);
     }
 
-    sound.playPaperSlide();
-    showNotification('Pass & Play started! Pass the device around to inspect Secret Envelopes.', 'info');
+    sound.playCardShuffle();
+    showNotification(
+      'Pass & Play started! Roles & policy deck shuffled—pass the device to inspect Secret Envelopes.',
+      'info'
+    );
     return { success: true };
   };
 
@@ -255,7 +274,6 @@ export function useOfflineGame(
     if (nextIdx < engine.players.length) {
       setNightPlayerIndex(nextIdx);
     } else {
-      // All human players have inspected their envelopes!
       engine.advanceToNomination();
       syncEngineState(engine);
       processBotActions(engine);
@@ -283,17 +301,75 @@ export function useOfflineGame(
       return;
     }
 
-    // Bots cast their votes automatically
     for (const p of engine.players) {
       if (p.isAlive && p.isBot) {
         engine.castVote(p.id, Math.random() < 0.7 ? 'JA' : 'NEIN');
       }
     }
 
-    const firstHumanVoter = engine.players.findIndex((p) => p.isAlive && !p.isBot && !engine.votes[p.id]);
+    const firstHumanVoter = engine.players.findIndex(
+      (p) => p.isAlive && !p.isBot && !engine.votes[p.id]
+    );
     setCurrentVoterIndex(firstHumanVoter !== -1 ? firstHumanVoter : 0);
     setPrivacyUnlocked(false);
     syncEngineState(engine);
+  };
+
+  // Handle post-vote resolution in offline mode
+  const handleOfflineVoteResolution = (
+    eng: GameEngine,
+    res: any,
+    fromTableVote = false
+  ) => {
+    syncEngineState(eng);
+
+    if (fromTableVote) {
+      // Table Approved/Rejected does NOT show individual vote breakdown
+      setLastElectionVotes(null);
+    } else {
+      setLastElectionVotes({
+        votes: res.votes || {},
+        passed: Boolean(res.passed),
+        chaos: res.chaos,
+        chaosPolicy: res.chaosPolicy,
+      });
+    }
+
+    if (res.hitlerCheck) {
+      setChancellorSuspenseCheck(res.hitlerCheck);
+    } else {
+      sound.playVoteResult(Boolean(res.passed));
+    }
+
+    if (res.deckReshuffled) {
+      setTimeout(() => sound.playCardShuffle(), 450);
+    }
+
+    if (res.gameOver && res.winner) {
+      if (!res.hitlerCheck) {
+        sound.playVictory(res.winner);
+      }
+      setGameOverData({
+        winner: res.winner,
+        winReason: res.winReason || '',
+        roles: eng.getAllRoles(),
+      });
+      return;
+    }
+
+    if (res.chaos) {
+      sound.playChaos();
+      showNotification(
+        `3 Failed Elections — CHAOS! Top policy (${res.chaosPolicy}) enacted!`,
+        'alert'
+      );
+    } else if (res.passed) {
+      showNotification('Government elected! Pass device to the President.', 'success');
+    } else {
+      showNotification('Vote failed! Presidency rotates clockwise.', 'info');
+    }
+
+    processBotActions(eng);
   };
 
   // Cast Vote for current active voter (or specific playerId)
@@ -314,8 +390,9 @@ export function useOfflineGame(
     setPrivacyUnlocked(false);
 
     if (res.waiting) {
-      // Find next living unvoted human player
-      const nextVoter = engine.players.findIndex((p) => p.isAlive && !p.isBot && !engine.votes[p.id]);
+      const nextVoter = engine.players.findIndex(
+        (p) => p.isAlive && !p.isBot && !engine.votes[p.id]
+      );
       if (nextVoter !== -1) {
         setCurrentVoterIndex(nextVoter);
       }
@@ -323,76 +400,17 @@ export function useOfflineGame(
       return;
     }
 
-    // All votes are in!
-    sound.playGavel();
-    syncEngineState(engine);
-
-    if (res.gameOver && res.winner) {
-      sound.playVictory(res.winner);
-      setGameOverData({
-        winner: res.winner,
-        winReason: res.winReason || '',
-        roles: engine.getAllRoles(),
-      });
-      return;
-    }
-
-    setLastElectionVotes({
-      votes: res.votes || {},
-      passed: Boolean(res.passed),
-      chaos: res.chaos,
-      chaosPolicy: res.chaosPolicy,
-    });
-
-    if (res.chaos) {
-      sound.playFascistPolicy();
-      showNotification(`3 Failed Elections — CHAOS! Top policy (${res.chaosPolicy}) enacted!`, 'alert');
-    } else if (res.passed) {
-      showNotification('Government elected! Pass device to the President.', 'success');
-    } else {
-      showNotification('Vote failed! Presidency rotates clockwise.', 'info');
-    }
-
-    processBotActions(engine);
+    handleOfflineVoteResolution(engine, res, false);
   };
 
   // Quick Table Vote (when players vote out loud / by show of hands in the room)
+  // Does NOT record or display individual Last Election Vote Breakdown
   const resolveQuickTableVote = (passed: boolean) => {
     if (!engine || engine.phase !== 'VOTING') return;
-    sound.playGavel();
-    const alive = engine.players.filter((p) => p.isAlive);
-    for (const p of alive) {
-      if (!engine.votes[p.id]) {
-        const res = engine.castVote(p.id, passed ? 'JA' : 'NEIN');
-        if (!res.waiting) {
-          syncEngineState(engine);
-          if (res.gameOver && res.winner) {
-            sound.playVictory(res.winner);
-            setGameOverData({
-              winner: res.winner,
-              winReason: res.winReason || '',
-              roles: engine.getAllRoles(),
-            });
-            return;
-          }
-          setLastElectionVotes({
-            votes: res.votes || {},
-            passed: Boolean(res.passed),
-            chaos: res.chaos,
-            chaosPolicy: res.chaosPolicy,
-          });
-          if (res.chaos) {
-            sound.playFascistPolicy();
-            showNotification(`3 Failed Elections — CHAOS! Top policy (${res.chaosPolicy}) enacted!`, 'alert');
-          } else if (res.passed) {
-            showNotification('Government elected! Pass device to the President.', 'success');
-          } else {
-            showNotification('Vote failed! Presidency rotates clockwise.', 'info');
-          }
-          processBotActions(engine);
-          break;
-        }
-      }
+    const res = engine.resolveTableVote(passed);
+    if (res.success) {
+      setPrivacyUnlocked(false);
+      handleOfflineVoteResolution(engine, res, true);
     }
   };
 
@@ -406,7 +424,6 @@ export function useOfflineGame(
       showNotification(res.error || 'Discard failed', 'alert');
       return;
     }
-    // Immediately lock screen so President can pass device to Chancellor without leaking the 2 tiles
     setPrivacyUnlocked(false);
     syncEngineState(engine);
     processBotActions(engine);
@@ -425,6 +442,10 @@ export function useOfflineGame(
     setPrivacyUnlocked(false);
     syncEngineState(engine);
 
+    if (res.deckReshuffled) {
+      setTimeout(() => sound.playCardShuffle(), 500);
+    }
+
     if (res.gameOver && res.winner) {
       sound.playVictory(res.winner);
       setGameOverData({
@@ -438,7 +459,10 @@ export function useOfflineGame(
     if (res.policy === 'LIBERAL') sound.playLiberalPolicy();
     else sound.playFascistPolicy();
 
-    showNotification(`A ${res.policy} Policy has been enacted!`, res.policy === 'LIBERAL' ? 'success' : 'alert');
+    showNotification(
+      `A ${res.policy} Policy has been enacted!`,
+      res.policy === 'LIBERAL' ? 'success' : 'alert'
+    );
     processBotActions(engine);
   };
 
@@ -471,6 +495,10 @@ export function useOfflineGame(
     setPrivacyUnlocked(false);
     syncEngineState(engine);
 
+    if (res.deckReshuffled) {
+      setTimeout(() => sound.playCardShuffle(), 450);
+    }
+
     if (res.gameOver && res.winner) {
       sound.playVictory(res.winner);
       setGameOverData({
@@ -484,7 +512,10 @@ export function useOfflineGame(
     if (res.vetoed) {
       showNotification('Veto agreed! Both policy tiles discarded.', 'info');
     } else if (res.vetoRejected) {
-      showNotification('President refused Veto! Pass device back to Chancellor to enact a policy.', 'alert');
+      showNotification(
+        'President refused Veto! Pass device back to Chancellor to enact a policy.',
+        'alert'
+      );
     }
     processBotActions(engine);
   };
@@ -502,7 +533,7 @@ export function useOfflineGame(
 
   const investigatePlayer = (targetIndex: number) => {
     if (!engine) return;
-    sound.playPaperSlide();
+    sound.playInvestigation();
     const pres = engine.players[engine.presidentIndex];
     const res = engine.investigatePlayer(pres.id, targetIndex);
     if (res.success && res.party && res.targetName) {
@@ -554,8 +585,14 @@ export function useOfflineGame(
     setPrivacyUnlocked(false);
     syncEngineState(engine);
 
+    if (res.hitlerCheck) {
+      setChancellorSuspenseCheck(res.hitlerCheck);
+    }
+
     if (res.gameOver && res.winner) {
-      sound.playVictory(res.winner);
+      if (!res.hitlerCheck) {
+        sound.playVictory(res.winner);
+      }
       setGameOverData({
         winner: res.winner,
         winReason: res.winReason || '',
@@ -577,7 +614,12 @@ export function useOfflineGame(
     setEngine(null);
     setGameState(null);
     setGameOverData(null);
+    setChancellorSuspenseCheck(null);
     setPrivacyUnlocked(false);
+  };
+
+  const dismissChancellorSuspense = () => {
+    setChancellorSuspenseCheck(null);
   };
 
   const getNightInfoForPlayerId = (playerId: string): NightInfo | null => {
@@ -585,7 +627,6 @@ export function useOfflineGame(
     return engine.getNightInfoForPlayer(playerId);
   };
 
-  // Determine who currently holds the device in Pass-and-Play
   const getActiveActorPlayer = () => {
     if (!engine || !gameState) return null;
     if (gameState.phase === 'NIGHT') {
@@ -627,8 +668,9 @@ export function useOfflineGame(
       engine && gameState?.phase === 'LEGISLATIVE_CHANCELLOR' && privacyUnlocked
         ? engine.currentChancellorCards
         : null,
-    canVeto:
-      Boolean(engine && engine.fascistPolicies >= 5 && !engine.vetoUsedThisRound && currentChan),
+    canVeto: Boolean(
+      engine && engine.fascistPolicies >= 5 && !engine.vetoUsedThisRound && currentChan
+    ),
     peekCards:
       engine &&
       gameState?.phase === 'EXECUTIVE_ACTION' &&
@@ -639,6 +681,8 @@ export function useOfflineGame(
         : null,
     investigationResult,
     lastElectionVotes,
+    chancellorSuspenseCheck,
+    dismissChancellorSuspense,
     gameOverData,
     startOfflineGame,
     nominateChancellor,

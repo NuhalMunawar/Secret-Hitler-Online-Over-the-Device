@@ -8,7 +8,6 @@ import {
   ArrowRight,
   User,
   Eye,
-  ShieldCheck,
   Smartphone,
   Globe,
   UserPlus,
@@ -34,7 +33,6 @@ interface LobbyViewProps {
   onStartGame: () => void;
   onStartOfflineGame: (players: OfflinePlayerEntry[]) => { success: boolean; error?: string };
   onOpenRules: () => void;
-  onOpenDiagnostics: () => void;
 }
 
 export const LobbyView: React.FC<LobbyViewProps> = ({
@@ -51,7 +49,6 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
   onStartGame,
   onStartOfflineGame,
   onOpenRules,
-  onOpenDiagnostics,
 }) => {
   const [playModeTab, setPlayModeTab] = useState<'online' | 'offline'>('online');
   const [inputName, setInputName] = useState(playerName || '');
@@ -584,8 +581,8 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
             </div>
           )}
 
-          {/* Footer links for Official Rules & Verification Agents */}
-          <div className="pt-4 border-t border-[#2e2621] flex flex-wrap items-center justify-between gap-3 text-xs text-[#a89f91]">
+          {/* Footer link for Official Rules */}
+          <div className="pt-4 border-t border-[#2e2621] flex items-center justify-between text-xs text-[#a89f91]">
             <button
               onClick={() => {
                 sound.playClick();
@@ -595,17 +592,9 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
             >
               Read Official Secret Hitler Rules
             </button>
-
-            <button
-              onClick={() => {
-                sound.playClick();
-                onOpenDiagnostics();
-              }}
-              className="flex items-center gap-1.5 text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
-            >
-              <ShieldCheck className="w-4 h-4" />
-              <span>Run 5 Rule-Verification Agents</span>
-            </button>
+            <span className="font-mono-numbers text-[11px] text-[#7a6d60]">
+              17 Policy Deck (6 Liberal · 11 Fascist)
+            </span>
           </div>
         </div>
       </div>

@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { AgentCheckResult, NightInfo, Policy, PublicGameState, Spectator, Vote } from '../game/types.js';
+import {
+  AgentCheckResult,
+  HitlerSuspenseCheck,
+  NightInfo,
+  Policy,
+  PublicGameState,
+  Spectator,
+  Vote,
+} from '../game/types.js';
 import { sound } from '../utils/sound.js';
 
 export interface RoomMember {
@@ -34,7 +42,7 @@ export function useGameSocket() {
     targetName: string;
   } | null>(null);
 
-  // Voting progress
+  // Voting progress & suspense
   const [voteProgress, setVoteProgress] = useState<{ votesIn: number; votesNeeded: number } | null>(null);
   const [lastElectionVotes, setLastElectionVotes] = useState<{
     votes: Record<string, Vote>;
@@ -42,6 +50,8 @@ export function useGameSocket() {
     chaos?: boolean;
     chaosPolicy?: Policy;
   } | null>(null);
+  const [chancellorSuspenseCheck, setChancellorSuspenseCheck] =
+    useState<HitlerSuspenseCheck | null>(null);
 
   // Game over state
   const [gameOverData, setGameOverData] = useState<{
@@ -50,16 +60,22 @@ export function useGameSocket() {
     roles: Record<string, { role: string; party: string; name: string }>;
   } | null>(null);
 
-  const [notification, setNotification] = useState<{ message: string; type: 'info' | 'alert' | 'success' } | null>(null);
+  const [notification, setNotification] = useState<{
+    message: string;
+    type: 'info' | 'alert' | 'success';
+  } | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
 
-  const showNotification = useCallback((message: string, type: 'info' | 'alert' | 'success' = 'info') => {
-    setNotification({ message, type });
-    setTimeout(() => {
-      setNotification((curr) => (curr?.message === message ? null : curr));
-    }, 4500);
-  }, []);
+  const showNotification = useCallback(
+    (message: string, type: 'info' | 'alert' | 'success' = 'info') => {
+      setNotification({ message, type });
+      setTimeout(() => {
+        setNotification((curr) => (curr?.message === message ? null : curr));
+      }, 4500);
+    },
+    []
+  );
 
   useEffect(() => {
     const savedCode = localStorage.getItem('sh_room_code');
@@ -103,7 +119,12 @@ export function useGameSocket() {
 
     socket.on(
       'player-joined',
-      (data: { players: RoomMember[]; spectators?: Spectator[]; playerName: string; isSpectator?: boolean }) => {
+      (data: {
+        players: RoomMember[];
+        spectators?: Spectator[];
+        playerName: string;
+        isSpectator?: boolean;
+      }) => {
         setPlayers(data.players);
         if (data.spectators) setSpectators(data.spectators);
         sound.playClick();
@@ -121,31 +142,40 @@ export function useGameSocket() {
       if (data.spectators) setSpectators(data.spectators);
     });
 
-    socket.on('game-started', (data: { nightInfo: NightInfo | null; state: PublicGameState; isSpectator?: boolean }) => {
-      setNightInfo(data.nightInfo);
-      setGameState(data.state);
-      if (!data.isSpectator && data.nightInfo) {
-        setShowNightModal(true);
+    socket.on(
+      'game-started',
+      (data: { nightInfo: NightInfo | null; state: PublicGameState; isSpectator?: boolean }) => {
+        setNightInfo(data.nightInfo);
+        setGameState(data.state);
+        if (!data.isSpectator && data.nightInfo) {
+          setShowNightModal(true);
+        }
+        setGameOverData(null);
+        setLastElectionVotes(null);
+        setChancellorSuspenseCheck(null);
+        sound.playCardShuffle();
+        showNotification(
+          data.isSpectator
+            ? 'Game started! You are spectating.'
+            : 'Roles & policy deck shuffled! Inspect your secret envelope.',
+          'alert'
+        );
       }
-      setGameOverData(null);
-      setLastElectionVotes(null);
-      sound.playPaperSlide();
-      showNotification(
-        data.isSpectator ? 'Game started! You are spectating.' : 'Game started! Inspect your secret envelope.',
-        'alert'
-      );
-    });
+    );
 
     socket.on('state-update', (data: { state: PublicGameState }) => {
       setGameState(data.state);
       setVoteProgress(null);
     });
 
-    socket.on('vote-progress', (data: { votesIn: number; votesNeeded: number; state?: PublicGameState }) => {
-      setVoteProgress({ votesIn: data.votesIn, votesNeeded: data.votesNeeded });
-      if (data.state) setGameState(data.state);
-      sound.playVoteCast();
-    });
+    socket.on(
+      'vote-progress',
+      (data: { votesIn: number; votesNeeded: number; state?: PublicGameState }) => {
+        setVoteProgress({ votesIn: data.votesIn, votesNeeded: data.votesNeeded });
+        if (data.state) setGameState(data.state);
+        sound.playVoteCast();
+      }
+    );
 
     socket.on(
       'election-result',
@@ -154,6 +184,8 @@ export function useGameSocket() {
         votes: Record<string, Vote>;
         chaos?: boolean;
         chaosPolicy?: Policy;
+        hitlerCheck?: HitlerSuspenseCheck;
+        deckReshuffled?: boolean;
         state: PublicGameState;
       }) => {
         setGameState(data.state);
@@ -164,11 +196,23 @@ export function useGameSocket() {
           chaosPolicy: data.chaosPolicy,
         });
         setVoteProgress(null);
-        sound.playGavel();
+
+        if (data.hitlerCheck) {
+          setChancellorSuspenseCheck(data.hitlerCheck);
+        } else {
+          sound.playVoteResult(data.passed);
+        }
+
+        if (data.deckReshuffled) {
+          setTimeout(() => sound.playCardShuffle(), 450);
+        }
 
         if (data.chaos) {
-          sound.playFascistPolicy();
-          showNotification(`3 Failed Elections — CHAOS! Top policy (${data.chaosPolicy}) enacted!`, 'alert');
+          sound.playChaos();
+          showNotification(
+            `3 Failed Elections — CHAOS! Top policy (${data.chaosPolicy}) enacted!`,
+            'alert'
+          );
         } else if (data.passed) {
           showNotification('Government elected! Legislative session begins.', 'success');
         } else {
@@ -190,21 +234,35 @@ export function useGameSocket() {
       showNotification('You received 2 Policy tiles. Choose 1 to enact.', 'alert');
     });
 
-    socket.on('policy-enacted', (data: { policy: Policy; state: PublicGameState; executiveAction: string }) => {
-      setGameState(data.state);
-      setPresidentCards(null);
-      setChancellorCards(null);
-      if (data.policy === 'LIBERAL') {
-        sound.playLiberalPolicy();
-      } else {
-        sound.playFascistPolicy();
+    socket.on(
+      'policy-enacted',
+      (data: {
+        policy: Policy;
+        state: PublicGameState;
+        executiveAction: string;
+        deckReshuffled?: boolean;
+      }) => {
+        setGameState(data.state);
+        setPresidentCards(null);
+        setChancellorCards(null);
+        if (data.policy === 'LIBERAL') {
+          sound.playLiberalPolicy();
+        } else {
+          sound.playFascistPolicy();
+        }
+        if (data.deckReshuffled) {
+          setTimeout(() => sound.playCardShuffle(), 500);
+        }
+        showNotification(
+          `A ${data.policy} Policy has been enacted!`,
+          data.policy === 'LIBERAL' ? 'success' : 'alert'
+        );
       }
-      showNotification(`A ${data.policy} Policy has been enacted!`, data.policy === 'LIBERAL' ? 'success' : 'alert');
-    });
+    );
 
     socket.on('peek-cards', (data: { cards: Policy[] }) => {
       setPeekCards(data.cards);
-      sound.playPaperSlide();
+      sound.playInvestigation();
     });
 
     socket.on('veto-proposed', (data: { state: PublicGameState }) => {
@@ -213,11 +271,14 @@ export function useGameSocket() {
       showNotification('Chancellor proposed a VETO!', 'alert');
     });
 
-    socket.on('veto-accepted', (data: { state: PublicGameState }) => {
+    socket.on('veto-accepted', (data: { state: PublicGameState; deckReshuffled?: boolean }) => {
       setGameState(data.state);
       setPresidentCards(null);
       setChancellorCards(null);
       sound.playGavel();
+      if (data.deckReshuffled) {
+        setTimeout(() => sound.playCardShuffle(), 400);
+      }
       showNotification('Veto agreed! Both policy tiles discarded.', 'info');
     });
 
@@ -227,16 +288,40 @@ export function useGameSocket() {
       showNotification('President rejected the Veto. Chancellor must enact a policy.', 'alert');
     });
 
-    socket.on('player-executed', (data: { killed: string; state: PublicGameState }) => {
-      setGameState(data.state);
-      sound.playExecution();
-      showNotification(`${data.killed} has been formally executed!`, 'alert');
-    });
+    socket.on(
+      'player-executed',
+      (data: { killed: string; hitlerCheck?: HitlerSuspenseCheck; state: PublicGameState }) => {
+        setGameState(data.state);
+        sound.playExecution();
+        if (data.hitlerCheck) {
+          setChancellorSuspenseCheck(data.hitlerCheck);
+        }
+        showNotification(`${data.killed} has been formally executed!`, 'alert');
+      }
+    );
 
     socket.on(
       'game-over',
-      (data: { state: PublicGameState; winner: 'LIBERAL' | 'FASCIST'; winReason: string; roles: any }) => {
+      (data: {
+        state: PublicGameState;
+        winner: 'LIBERAL' | 'FASCIST';
+        winReason: string;
+        roles: any;
+        hitlerCheck?: HitlerSuspenseCheck;
+        votes?: Record<string, Vote>;
+      }) => {
         setGameState(data.state);
+        if (data.votes) {
+          setLastElectionVotes({
+            votes: data.votes,
+            passed: true,
+          });
+        }
+        if (data.hitlerCheck) {
+          setChancellorSuspenseCheck(data.hitlerCheck);
+        } else {
+          sound.playVictory(data.winner);
+        }
         setGameOverData({
           winner: data.winner,
           winReason: data.winReason,
@@ -246,7 +331,6 @@ export function useGameSocket() {
         setChancellorCards(null);
         setPeekCards(null);
         setInvestigationResult(null);
-        sound.playVictory(data.winner);
       }
     );
 
@@ -260,6 +344,7 @@ export function useGameSocket() {
       setChancellorCards(null);
       setPeekCards(null);
       setInvestigationResult(null);
+      setChancellorSuspenseCheck(null);
       sound.playClick();
       showNotification('Room reset to lobby for a new game.', 'info');
     });
@@ -329,6 +414,7 @@ export function useGameSocket() {
     setGameState(null);
     setNightInfo(null);
     setGameOverData(null);
+    setChancellorSuspenseCheck(null);
     window.history.replaceState({}, '', window.location.pathname);
   };
 
@@ -347,7 +433,7 @@ export function useGameSocket() {
   };
 
   const startGame = () => {
-    sound.playClick();
+    sound.playCardShuffle();
     socketRef.current?.emit('start-game', {}, (res: any) => {
       if (res.success) {
         if (res.nightInfo) setNightInfo(res.nightInfo);
@@ -355,8 +441,8 @@ export function useGameSocket() {
         setShowNightModal(true);
         setGameOverData(null);
         setLastElectionVotes(null);
-        sound.playPaperSlide();
-        showNotification('Game started! Inspect your secret envelope.', 'alert');
+        setChancellorSuspenseCheck(null);
+        showNotification('Roles & policy deck shuffled! Inspect your secret envelope.', 'alert');
       } else {
         showNotification(res.error || 'Could not start game', 'alert');
       }
@@ -422,7 +508,7 @@ export function useGameSocket() {
   };
 
   const investigatePlayer = (targetIndex: number) => {
-    sound.playPaperSlide();
+    sound.playInvestigation();
     socketRef.current?.emit('investigate-player', { targetIndex }, (res: any) => {
       if (res.success) {
         setInvestigationResult({
@@ -463,6 +549,10 @@ export function useGameSocket() {
     });
   };
 
+  const dismissChancellorSuspense = () => {
+    setChancellorSuspenseCheck(null);
+  };
+
   const runServerDiagnostics = (): Promise<AgentCheckResult[] | null> => {
     return new Promise((resolve) => {
       if (!socketRef.current || !connected) return resolve(null);
@@ -493,6 +583,8 @@ export function useGameSocket() {
     investigationResult,
     voteProgress,
     lastElectionVotes,
+    chancellorSuspenseCheck,
+    dismissChancellorSuspense,
     gameOverData,
     notification,
     eligibleChancellors: gameState?.eligibleChancellors || [],

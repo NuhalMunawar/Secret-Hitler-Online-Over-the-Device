@@ -216,3 +216,96 @@ test('All 5 Debugging & Verification Agents pass 100% of checks', () => {
     assert.equal(agent.status, 'PASS', `Agent ${agent.agentName} failed: ${agent.details.join('; ')}`);
   }
 });
+
+function createTestGame(count: number) {
+  const players = Array.from({ length: count }, (_, i) => ({
+    id: `p_${i + 1}`,
+    name: `Player ${i + 1}`,
+  }));
+  const engine = new GameEngine(players);
+  engine.startGame();
+  engine.advanceToNomination();
+  return engine;
+}
+
+test('Role & Deck Shuffling: Player #1 gets unbiased random roles and deck order varies every game', () => {
+  const trials = 300;
+  let player1Liberal = 0;
+  let player1Fascist = 0;
+  let player1Hitler = 0;
+  const deckSignatures = new Set<string>();
+
+  for (let t = 0; t < trials; t++) {
+    const game = createTestGame(5);
+    if (game.players[0].role === 'LIBERAL') player1Liberal++;
+    else if (game.players[0].role === 'FASCIST') player1Fascist++;
+    else if (game.players[0].role === 'HITLER') player1Hitler++;
+
+    deckSignatures.add(game.drawDeck.join(','));
+  }
+
+  // In a 5-player game (3L, 1F, 1H), Player #1 should get Liberal ~60% of the time (180 +- 45)
+  assert.ok(player1Liberal > 120 && player1Liberal < 240, `Expected uniform Liberal distribution for Player #1, got ${player1Liberal}/${trials}`);
+  assert.ok(player1Fascist > 25 && player1Fascist < 100, `Expected uniform Fascist distribution for Player #1, got ${player1Fascist}/${trials}`);
+  assert.ok(player1Hitler > 25 && player1Hitler < 100, `Expected uniform Hitler distribution for Player #1, got ${player1Hitler}/${trials}`);
+  // Deck signatures should have high entropy
+  assert.ok(deckSignatures.size > 200, `Expected diverse deck shuffles, got ${deckSignatures.size} unique orders`);
+});
+
+test('Hitler Suspense Check reveals ONLY Hitler status (no party info) on 3+ Fascist Chancellor election and Player Execution', () => {
+  const game = createTestGame(5);
+  game.fascistPolicies = 3;
+  game.presidentIndex = 0;
+
+  const nonHitlerIdx = game.players.findIndex((p, idx) => idx !== 0 && p.role !== 'HITLER');
+  game.nominateChancellor(nonHitlerIdx);
+
+  let lastRes: any = null;
+  for (const p of game.players) {
+    lastRes = game.castVote(p.id, 'JA');
+  }
+
+  assert.equal(lastRes.passed, true);
+  assert.ok(lastRes.hitlerCheck, 'Expected hitlerCheck when fascistPolicies >= 3');
+  assert.equal(lastRes.hitlerCheck.targetName, game.players[nonHitlerIdx].name);
+  assert.equal(lastRes.hitlerCheck.context, 'CHANCELLOR_ELECTED');
+  assert.equal(lastRes.hitlerCheck.isHitler, false);
+  assert.equal('party' in lastRes.hitlerCheck, false, 'hitlerCheck must NOT leak party');
+  assert.equal('role' in lastRes.hitlerCheck, false, 'hitlerCheck must NOT leak role');
+  assert.ok(lastRes.lastVoteDetails);
+  assert.equal(lastRes.lastVoteDetails.jaCount, 5);
+
+  // Also test Execution Hitler Check
+  game.phase = 'EXECUTIVE_ACTION';
+  game.executiveAction = 'EXECUTE';
+  const presId = game.players[game.presidentIndex].id;
+  const execRes = game.executeKill(presId, nonHitlerIdx);
+  assert.equal(execRes.success, true);
+  assert.ok(execRes.hitlerCheck, 'Expected hitlerCheck when a player is executed');
+  assert.equal(execRes.hitlerCheck?.context, 'PLAYER_EXECUTED');
+  assert.equal(execRes.hitlerCheck?.isHitler, false);
+  assert.equal('party' in (execRes.hitlerCheck as any), false);
+});
+
+test('Table Approved/Rejected omits LastVoteDetails and Government History records Liberal/Fascist enactments', () => {
+  const game = createTestGame(5);
+  game.presidentIndex = 0;
+  game.nominateChancellor(1);
+
+  const tableRes = game.resolveTableVote(true);
+  assert.equal(tableRes.success, true);
+  assert.equal(tableRes.passed, true);
+  assert.equal(game.lastVoteDetails, null, 'Table vote must not produce lastVoteDetails breakdown');
+
+  // Enact policy and verify governmentHistory on President and Chancellor
+  const pres = game.players[0];
+  const chan = game.players[1];
+  game.presidentDiscard(pres.id, 0);
+  const enactedPolicy = game.currentChancellorCards[0];
+  game.chancellorDiscard(chan.id, 1);
+
+  assert.deepEqual(pres.governmentHistory, [enactedPolicy]);
+  assert.deepEqual(chan.governmentHistory, [enactedPolicy]);
+});
+
+
