@@ -1,5 +1,5 @@
 import React from 'react';
-import { RotateCcw } from 'lucide-react';
+import { RotateCcw, LogOut } from 'lucide-react';
 import { LiberalDoveSVG, FascistSkullSVG } from './Artwork.js';
 
 interface GameOverModalProps {
@@ -9,6 +9,7 @@ interface GameOverModalProps {
   roles: Record<string, { role: string; party: string; name: string }>;
   isHost: boolean;
   onRestart: () => void;
+  onExitRoom: () => void;
 }
 
 export const GameOverModal: React.FC<GameOverModalProps> = ({
@@ -18,6 +19,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
   roles,
   isHost,
   onRestart,
+  onExitRoom,
 }) => {
   if (!isOpen) return null;
 
@@ -104,20 +106,28 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
           </div>
         </div>
 
-        <div className="pt-4 border-t border-[#2e2621] flex items-center justify-center">
+        <div className="pt-5 border-t border-[#2e2621] flex flex-col sm:flex-row items-center justify-center gap-3">
           {isHost ? (
             <button
               onClick={onRestart}
-              className="w-full sm:w-auto px-6 py-2.5 text-xs font-bold uppercase tracking-wider text-[#12100e] bg-[#d4a359] hover:bg-[#e0b46e] rounded transition-colors flex items-center justify-center gap-2 cursor-pointer"
+              className="w-full sm:w-auto px-6 py-3 text-xs font-bold uppercase tracking-wider text-[#12100e] bg-[#d4a359] hover:bg-[#e0b46e] rounded transition-colors flex items-center justify-center gap-2 cursor-pointer"
             >
               <RotateCcw className="w-4 h-4" />
               <span>Play Again in This Room</span>
             </button>
           ) : (
-            <div className="text-xs text-[#a89f91] italic">
+            <div className="text-xs text-[#a89f91] italic py-2">
               Waiting for the host to start a new game...
             </div>
           )}
+
+          <button
+            onClick={onExitRoom}
+            className="w-full sm:w-auto px-6 py-3 text-xs font-bold uppercase tracking-wider text-[#f4efe6] bg-[#241e1a] hover:bg-[#c83228] border border-[#3d332c] hover:border-[#c83228] rounded transition-colors flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Exit The Room</span>
+          </button>
         </div>
       </div>
     </div>

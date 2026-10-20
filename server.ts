@@ -67,7 +67,8 @@ function saveRoomsToDisk() {
     const MAX_AGE_MS = 24 * 60 * 60 * 1000;
     const serialized: Record<string, any> = {};
     for (const [code, room] of Object.entries(rooms)) {
-      if (now - room.updatedAt < MAX_AGE_MS && room.players.length > 0) {
+      const hasRealPlayer = room.players.some((p) => !p.isBot);
+      if (now - room.updatedAt < MAX_AGE_MS && hasRealPlayer) {
         serialized[code] = room.toJSON();
       }
     }
@@ -90,7 +91,12 @@ function getPublicRoomsList() {
   const now = Date.now();
   const MAX_AGE_MS = 12 * 60 * 60 * 1000;
   return Object.values(rooms)
-    .filter((r) => !r.isPrivate && r.players.length > 0 && now - r.updatedAt < MAX_AGE_MS)
+    .filter(
+      (r) =>
+        !r.isPrivate &&
+        r.players.some((p) => !p.isBot) &&
+        now - r.updatedAt < MAX_AGE_MS
+    )
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .map((r) => r.getSummary());
 }
@@ -150,10 +156,19 @@ app.post('/api/live/create', (req, res) => {
   try {
     const playerName = (req.body?.playerName || 'Host').trim() || 'Host';
     const isPrivate = Boolean(req.body?.isPrivate);
+    const password = (req.body?.password || '').trim();
+
+    if (!password || password.length < 4 || password.length > 64) {
+      return res.status(400).json({
+        success: false,
+        error: 'Password must be between 4 and 64 characters.',
+      });
+    }
+
     const playerId = `usr_${Math.random().toString(36).substring(2, 8)}_${Date.now().toString(36)}`;
-    let room = new Room(playerId, playerName, playerId, undefined, isPrivate);
+    let room = new Room(playerId, playerName, playerId, undefined, isPrivate, password);
     while (rooms[room.code]) {
-      room = new Room(playerId, playerName, playerId, undefined, isPrivate);
+      room = new Room(playerId, playerName, playerId, undefined, isPrivate, password);
     }
     rooms[room.code] = room;
     broadcastPublicRooms();
@@ -195,13 +210,14 @@ app.post('/api/live/:code/join', (req, res) => {
     }
 
     const playerName = (req.body?.playerName || '').trim();
+    const password = (req.body?.password || '').trim();
     const existingPlayerId = req.body?.playerId;
     const claimPlayerId = req.body?.claimPlayerId;
     const newId =
       existingPlayerId ||
       `usr_${Math.random().toString(36).substring(2, 8)}_${Date.now().toString(36)}`;
 
-    const result = room.addPlayer(newId, playerName, undefined, claimPlayerId);
+    const result = room.addPlayer(newId, playerName, password, undefined, claimPlayerId);
     if (!result.success) {
       return res.status(400).json({ success: false, error: result.error });
     }
@@ -255,6 +271,10 @@ app.post('/api/live/:code/action', (req, res) => {
       return res.status(400).json(result);
     }
 
+    if (action === 'leave-room' || !rooms[room.code]) {
+      return res.json(result);
+    }
+
     res.json({
       ...result,
       snapshot: room.getLiveSnapshot(playerId),
@@ -275,17 +295,32 @@ function executeRoomAction(
 
   switch (action) {
     case 'leave-room': {
-      const { remaining } = room.removePlayer(playerId);
-      if (remaining === 0 && room.spectators.length === 0) {
+      // Unbind any sockets belonging to this leaving player
+      for (const [sid, info] of Object.entries(socketMap)) {
+        if (info.roomCode === room.code && info.playerId === playerId) {
+          const targetSock = io.sockets.sockets.get(sid);
+          if (targetSock) targetSock.leave(room.code);
+          delete socketMap[sid];
+        }
+      }
+
+      const { shouldCloseRoom } = room.removePlayer(playerId);
+      if (shouldCloseRoom) {
+        io.to(room.code).emit('room-closed', {
+          roomCode: room.code,
+          reason: 'Room closed because no real players remain.',
+        });
         delete rooms[room.code];
       } else {
         io.to(room.code).emit('lobby-updated', {
           players: room.getPlayerList(),
           spectators: room.getSpectatorList(),
+          hostId: room.hostId,
         });
+        io.to(room.code).emit('live-room-sync', room.getLiveSnapshot());
       }
       broadcastPublicRooms();
-      return { success: true };
+      return { success: true, roomClosed: shouldCloseRoom };
     }
 
     case 'add-bot': {
@@ -684,14 +719,13 @@ function executeRoomAction(
     }
 
     case 'restart-game': {
+      room.ensureRealPlayerHost();
       if (room.hostId !== playerId) return { success: false, error: 'Only host can restart' };
-      room.started = false;
-      room.game = null;
-      room.lastHitlerCheck = null;
-      room.touch();
+      room.resetToLobby();
       io.to(room.code).emit('game-reset', {
         players: room.getPlayerList(),
         spectators: room.getSpectatorList(),
+        hostId: room.hostId,
       });
       broadcastPublicRooms();
       return { success: true };
@@ -709,12 +743,17 @@ io.on('connection', (socket: Socket) => {
   // CREATE ROOM
   socket.on(
     'create-room',
-    ({ playerName, isPrivate }: { playerName: string; isPrivate?: boolean }, callback) => {
+    ({ playerName, password, isPrivate }: { playerName: string; password?: string; isPrivate?: boolean }, callback) => {
       try {
+        const cleanPassword = (password || '').trim();
+        if (!cleanPassword || cleanPassword.length < 4 || cleanPassword.length > 64) {
+          return callback({ error: 'Password must be between 4 and 64 characters.' });
+        }
+
         const playerId = `usr_${socket.id.substring(0, 6)}_${Date.now().toString(36)}`;
-        let room = new Room(playerId, playerName || 'Host', socket.id, undefined, Boolean(isPrivate));
+        let room = new Room(playerId, playerName || 'Host', socket.id, undefined, Boolean(isPrivate), cleanPassword);
         while (rooms[room.code]) {
-          room = new Room(playerId, playerName || 'Host', socket.id, undefined, Boolean(isPrivate));
+          room = new Room(playerId, playerName || 'Host', socket.id, undefined, Boolean(isPrivate), cleanPassword);
         }
         rooms[room.code] = room;
 
@@ -746,9 +785,10 @@ io.on('connection', (socket: Socket) => {
       {
         roomCode,
         playerName,
+        password,
         playerId: prevPlayerId,
         claimPlayerId,
-      }: { roomCode: string; playerName: string; playerId?: string; claimPlayerId?: string },
+      }: { roomCode: string; playerName: string; password?: string; playerId?: string; claimPlayerId?: string },
       callback
     ) => {
       try {
@@ -761,7 +801,7 @@ io.on('connection', (socket: Socket) => {
 
         const candidateId =
           prevPlayerId || `usr_${socket.id.substring(0, 6)}_${Date.now().toString(36)}`;
-        const result = room.addPlayer(candidateId, playerName, socket.id, claimPlayerId);
+        const result = room.addPlayer(candidateId, playerName, password, socket.id, claimPlayerId);
         if (!result.success) {
           return callback({ error: result.error });
         }
@@ -805,20 +845,31 @@ io.on('connection', (socket: Socket) => {
   socket.on(
     'reconnect-room',
     (
-      { roomCode, playerName, playerId: prevPlayerId }: { roomCode: string; playerName: string; playerId?: string },
+      {
+        roomCode,
+        playerName,
+        password,
+        playerId: prevPlayerId,
+      }: { roomCode: string; playerName: string; password?: string; playerId?: string },
       callback
     ) => {
       const code = (roomCode || '').toUpperCase().trim();
       const room = getRoomByCode(code);
       if (!room) return callback({ error: 'Room not found' });
 
-      // Check active players first
-      const player = room.players.find(
-        (p) =>
-          !p.isBot &&
-          ((prevPlayerId && p.id === prevPlayerId) ||
-            (playerName && p.name.toLowerCase() === playerName.toLowerCase()))
-      );
+      const cleanPw = (password || '').trim();
+
+      // Check active players first (require matching prevPlayerId or valid password)
+      const player = room.players.find((p) => {
+        if (p.isBot) return false;
+        if (prevPlayerId && p.id === prevPlayerId && !p.leftWhileRunning) {
+          return !p.password || !cleanPw || p.password === cleanPw;
+        }
+        if (playerName && p.name.toLowerCase() === playerName.toLowerCase()) {
+          return !p.password || p.password === cleanPw;
+        }
+        return false;
+      });
 
       if (player) {
         room.setPlayerSocketId(player.id, socket.id, true);

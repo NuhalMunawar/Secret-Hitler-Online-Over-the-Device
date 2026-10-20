@@ -10,6 +10,7 @@ import { NightModal } from './components/NightModal.js';
 import { GameOverModal } from './components/GameOverModal.js';
 import { RulesModal } from './components/RulesModal.js';
 import { ChancellorSuspenseModal } from './components/ChancellorSuspenseModal.js';
+import { PolicyEnactmentModal } from './components/PolicyEnactmentModal.js';
 import { GameLog } from './components/GameLog.js';
 import { AlertCircle, CheckCircle, Info } from 'lucide-react';
 
@@ -199,6 +200,12 @@ export default function App() {
                   : online.lastElectionVotes?.votes || null
               }
               isVotingPhase={activeGameState!.phase === 'VOTING'}
+              isSpectator={activeIsSpectator}
+              onSyncSeat={
+                !isOffline && online.roomCode
+                  ? (pid, pname, pw) => online.joinRoom(online.roomCode!, pname, pw, pid)
+                  : undefined
+              }
             />
 
             {/* Session Log */}
@@ -247,6 +254,16 @@ export default function App() {
         }
       />
 
+      {/* Policy Enactment Animation Modal (Animated card slam onto designated track slot) */}
+      <PolicyEnactmentModal
+        enacted={
+          isOffline ? offline.enactedPolicyEvent : online.enactedPolicyEvent
+        }
+        onDismiss={
+          isOffline ? offline.dismissEnactedPolicy : online.dismissEnactedPolicy
+        }
+      />
+
       {/* Game Over Modal (waits until ChancellorSuspenseModal is dismissed if triggered) */}
       {activeGameOverData && !activeChancellorSuspense && (
         <GameOverModal
@@ -256,6 +273,7 @@ export default function App() {
           roles={activeGameOverData.roles}
           isHost={isOffline ? true : online.isHost}
           onRestart={isOffline ? offline.restartOfflineGame : online.restartGame}
+          onExitRoom={isOffline ? offline.exitOfflineMode : online.leaveRoom}
         />
       )}
     </div>

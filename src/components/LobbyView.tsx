@@ -17,6 +17,7 @@ import {
   ArrowLeft,
   ExternalLink,
   Lock,
+  EyeOff,
 } from 'lucide-react';
 import {
   LiveRoomSnapshot,
@@ -43,10 +44,15 @@ interface LobbyViewProps {
   ) => Promise<{ success: boolean; snapshot?: LiveRoomSnapshot; error?: string }>;
   onCloseLivePreview: () => void;
   onRefreshPublicRooms: () => void;
-  onCreateRoom: (name: string, isPrivate?: boolean) => Promise<{ success: boolean; error?: string }>;
+  onCreateRoom: (
+    name: string,
+    password: string,
+    isPrivate?: boolean
+  ) => Promise<{ success: boolean; error?: string }>;
   onJoinRoom: (
     code: string,
     name: string,
+    password: string,
     claimPlayerId?: string
   ) => Promise<{ success: boolean; error?: string }>;
   onAddBot: () => void;
@@ -82,10 +88,23 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
   const [playModeTab, setPlayModeTab] = useState<'online' | 'offline'>('online');
   const [createRoomVisibility, setCreateRoomVisibility] = useState<'public' | 'private'>('public');
   const [inputName, setInputName] = useState(playerName || '');
+  const [inputPassword, setInputPassword] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('sh_player_password') || '';
+    }
+    return '';
+  });
+  const [showPassword, setShowPassword] = useState<boolean>(false);
   const [inputCode, setInputCode] = useState('');
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [syncTarget, setSyncTarget] = useState<{
+    roomCode: string;
+    playerId?: string;
+    playerName: string;
+  } | null>(null);
+  const [syncPassword, setSyncPassword] = useState<string>('');
 
   // Offline Pass & Play roster state (defaults to 5 seats ready to fill)
   const [offlineRoster, setOfflineRoster] = useState<OfflinePlayerEntry[]>([
@@ -114,8 +133,13 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
       setErrorMsg('Please enter your name before creating a room.');
       return;
     }
+    const cleanPw = inputPassword.trim();
+    if (!cleanPw || cleanPw.length < 4 || cleanPw.length > 64) {
+      setErrorMsg('Please create a password between 4 and 64 characters to secure your player seat.');
+      return;
+    }
     setLoading(true);
-    const res = await onCreateRoom(inputName.trim(), createRoomVisibility === 'private');
+    const res = await onCreateRoom(inputName.trim(), cleanPw, createRoomVisibility === 'private');
     setLoading(false);
     if (!res.success) setErrorMsg(res.error || 'Failed to create room');
   };
@@ -138,8 +162,13 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
       }
       return;
     }
+    const cleanPw = inputPassword.trim();
+    if (!cleanPw || cleanPw.length < 4 || cleanPw.length > 64) {
+      setErrorMsg('Please enter your password (4–64 characters) to sync with this seat.');
+      return;
+    }
     setLoading(true);
-    const res = await onJoinRoom(cleanCode, inputName.trim());
+    const res = await onJoinRoom(cleanCode, inputName.trim(), cleanPw);
     setLoading(false);
     if (!res.success) setErrorMsg(res.error || 'Failed to join room');
   };
@@ -159,13 +188,44 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
     }
   };
 
-  const handleClaimSeat = async (code: string, seatPlayer: RoomMember) => {
+  const handleStartSyncForSeat = (
+    code: string,
+    seatPlayer: { id?: string; name: string }
+  ) => {
+    sound.playClick();
     setErrorMsg(null);
+    setSyncTarget({
+      roomCode: code.trim().toUpperCase(),
+      playerId: seatPlayer.id,
+      playerName: seatPlayer.name,
+    });
+    setSyncPassword(inputPassword.trim());
+  };
+
+  const handleConfirmSyncSeat = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!syncTarget) return;
+    setErrorMsg(null);
+    const cleanPw = syncPassword.trim();
+    if (!cleanPw || cleanPw.length < 4 || cleanPw.length > 64) {
+      setErrorMsg(
+        `Please enter the password for "${syncTarget.playerName}" (4–64 characters) to reclaim your seat.`
+      );
+      return;
+    }
     setLoading(true);
-    const res = await onJoinRoom(code, seatPlayer.name, seatPlayer.id);
+    const res = await onJoinRoom(
+      syncTarget.roomCode,
+      syncTarget.playerName,
+      cleanPw,
+      syncTarget.playerId
+    );
     setLoading(false);
     if (!res.success) {
       setErrorMsg(res.error || 'Could not sync to seat');
+    } else {
+      setSyncTarget(null);
+      setSyncPassword('');
     }
   };
 
@@ -178,8 +238,13 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
       setErrorMsg('Please enter your name above to join this Live Room.');
       return;
     }
+    const cleanPw = inputPassword.trim();
+    if (!asSpectatorOnly && (!cleanPw || cleanPw.length < 4 || cleanPw.length > 64)) {
+      setErrorMsg('Please enter a password between 4 and 64 characters to secure your player seat.');
+      return;
+    }
     setLoading(true);
-    const res = await onJoinRoom(code, chosenName);
+    const res = await onJoinRoom(code, chosenName, cleanPw || 'spectator123');
     setLoading(false);
     if (!res.success) {
       setErrorMsg(res.error || 'Could not join live room');
@@ -545,19 +610,56 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
           <div className="p-5 rounded bg-[#14110e] border border-[#2e2621] space-y-4">
             <h3 className="text-lg font-woodcut tracking-wider text-[#f4efe6]">
               {liveRoomPreview.started
-                ? 'Join Live Room as Spectator (or Enter Name to Sync)'
-                : 'Enter Your Name to Join This Live Room'}
+                ? 'Join Live Room as Spectator (or Enter Password to Sync Seat)'
+                : 'Enter Your Name & Password to Join This Live Room'}
             </h3>
-            <div className="flex flex-col sm:flex-row gap-3">
-              <input
-                type="text"
-                aria-label="Your Name for Live Room"
-                value={inputName}
-                onChange={(e) => setInputName(e.target.value)}
-                placeholder="Enter your name..."
-                maxLength={20}
-                className="flex-1 px-4 py-3 rounded bg-[#0d0b09] border border-[#3d332c] text-[#f4efe6] placeholder-[#6e655c] text-sm focus:outline-none focus:border-[#d4a359]"
-              />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-mono-numbers uppercase text-[#a89f91] mb-1">
+                  Your Name
+                </label>
+                <input
+                  type="text"
+                  aria-label="Your Name for Live Room"
+                  value={inputName}
+                  onChange={(e) => setInputName(e.target.value)}
+                  placeholder="Enter your name..."
+                  maxLength={20}
+                  className="w-full px-4 py-2.5 rounded bg-[#0d0b09] border border-[#3d332c] text-[#f4efe6] placeholder-[#6e655c] text-sm focus:outline-none focus:border-[#d4a359]"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-mono-numbers uppercase text-[#a89f91]">
+                    One-Time Password
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((p) => !p)}
+                    className="text-[11px] text-[#a89f91] hover:text-[#f4efe6] flex items-center gap-1 cursor-pointer"
+                  >
+                    {showPassword ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                    <span>{showPassword ? 'Hide' : 'Show'}</span>
+                  </button>
+                </div>
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  aria-label="Your Password for Live Room"
+                  value={inputPassword}
+                  onChange={(e) => setInputPassword(e.target.value)}
+                  placeholder="4–64 characters..."
+                  minLength={4}
+                  maxLength={64}
+                  className="w-full px-4 py-2.5 rounded bg-[#0d0b09] border border-[#3d332c] text-[#f4efe6] placeholder-[#6e655c] text-sm focus:outline-none focus:border-[#d4a359]"
+                />
+              </div>
+            </div>
+            <p className="text-[11px] text-[#a89f91] leading-relaxed">
+              Make sure you remember this password. In case you get disconnected or want to enter from another device, provide this password after clicking &apos;Sync&apos; with your name to reclaim your seat.
+            </p>
+
+            <div className="flex flex-wrap gap-3 pt-1">
               {!liveRoomPreview.started && liveRoomPreview.players.length < 10 && (
                 <button
                   onClick={() => handleJoinFromLivePage(liveRoomPreview.roomCode, false)}
@@ -587,49 +689,100 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
                   Seated Players in Room {liveRoomPreview.roomCode} ({liveRoomPreview.players.length}/10)
                 </h3>
                 <p className="text-xs text-[#a89f91]">
-                  Already seated in this room on another tab or device? Tap your seat below to sync
-                  this device directly to your player data:
+                  Click &apos;Sync&apos; next to your name and provide your password to reclaim your seat:
                 </p>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {liveRoomPreview.players.map((p, idx) => (
-                  <div
-                    key={p.id}
-                    className="p-3.5 rounded bg-[#14110e] border border-[#2e2621] flex items-center justify-between gap-3"
-                  >
-                    <div className="flex items-center gap-2.5 truncate">
-                      <span className="text-xs font-mono-numbers text-[#a89f91]">
-                        {String(idx + 1).padStart(2, '0')}.
-                      </span>
-                      {p.isBot ? (
-                        <Bot className="w-4 h-4 text-[#a89f91] shrink-0" />
-                      ) : (
-                        <User className="w-4 h-4 text-[#d4a359] shrink-0" />
-                      )}
-                      <span className="text-sm font-semibold text-[#f4efe6] truncate">
-                        {p.name}
-                      </span>
-                      {p.isHost && (
-                        <span className="text-[10px] font-mono-numbers text-[#d4a359] uppercase">
-                          (Host)
-                        </span>
+                {liveRoomPreview.players.map((p, idx) => {
+                  const isSyncingThisSeat =
+                    syncTarget?.roomCode === liveRoomPreview.roomCode &&
+                    (syncTarget?.playerId === p.id ||
+                      syncTarget?.playerName.toLowerCase() === p.name.toLowerCase());
+
+                  return (
+                    <div
+                      key={p.id}
+                      className="p-3.5 rounded bg-[#14110e] border border-[#2e2621] flex flex-col gap-2.5"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2.5 truncate">
+                          <span className="text-xs font-mono-numbers text-[#a89f91]">
+                            {String(idx + 1).padStart(2, '0')}.
+                          </span>
+                          {p.isBot ? (
+                            <Bot className="w-4 h-4 text-[#a89f91] shrink-0" />
+                          ) : (
+                            <User className="w-4 h-4 text-[#d4a359] shrink-0" />
+                          )}
+                          <span className="text-sm font-semibold text-[#f4efe6] truncate">
+                            {p.name}
+                          </span>
+                          {p.isHost && (
+                            <span className="text-[10px] font-mono-numbers text-[#d4a359] uppercase">
+                              (Host)
+                            </span>
+                          )}
+                          {!p.isBot && p.connected === false && (
+                            <span className="text-[10px] font-mono-numbers text-amber-400/90">
+                              (Disconnected)
+                            </span>
+                          )}
+                        </div>
+
+                        {!p.isBot ? (
+                          <button
+                            type="button"
+                            onClick={() => handleStartSyncForSeat(liveRoomPreview.roomCode, p)}
+                            disabled={loading}
+                            aria-label={`Sync with ${p.name}`}
+                            className="px-3 py-1.5 rounded bg-[#241e1a] hover:bg-[#d4a359] text-[#d4a359] hover:text-[#12100e] border border-[#d4a359]/40 text-[11px] font-bold uppercase tracking-wider transition-colors cursor-pointer shrink-0"
+                          >
+                            Sync
+                          </button>
+                        ) : (
+                          <span className="text-[11px] font-mono-numbers text-[#7a6d60]">Bot</span>
+                        )}
+                      </div>
+
+                      {isSyncingThisSeat && (
+                        <form
+                          onSubmit={handleConfirmSyncSeat}
+                          className="pt-2 border-t border-[#2e2621] flex flex-col gap-2"
+                        >
+                          <label className="text-[11px] text-[#d4a359] font-medium">
+                            Provide password to reclaim seat &ldquo;{p.name}&rdquo;:
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type={showPassword ? 'text' : 'password'}
+                              aria-label={`Password to sync with ${p.name}`}
+                              value={syncPassword}
+                              onChange={(e) => setSyncPassword(e.target.value)}
+                              placeholder="Enter your password..."
+                              autoFocus
+                              className="flex-1 px-3 py-1.5 rounded bg-[#0d0b09] border border-[#d4a359]/60 text-xs text-[#f4efe6] focus:outline-none focus:border-[#d4a359]"
+                            />
+                            <button
+                              type="submit"
+                              disabled={loading}
+                              className="px-3 py-1.5 rounded bg-[#d4a359] hover:bg-[#e0b46e] text-[#12100e] text-[11px] font-bold uppercase tracking-wider cursor-pointer shrink-0"
+                            >
+                              {loading ? 'Syncing...' : 'Reclaim Seat'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setSyncTarget(null)}
+                              className="px-2 py-1.5 rounded bg-[#241e1a] text-[#a89f91] hover:text-[#f4efe6] text-[11px] cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </form>
                       )}
                     </div>
-
-                    {!p.isBot ? (
-                      <button
-                        onClick={() => handleClaimSeat(liveRoomPreview.roomCode, p)}
-                        disabled={loading}
-                        className="px-3 py-1.5 rounded bg-[#241e1a] hover:bg-[#d4a359] text-[#d4a359] hover:text-[#12100e] border border-[#d4a359]/40 text-[11px] font-bold uppercase tracking-wider transition-colors cursor-pointer shrink-0"
-                      >
-                        Sync This Seat
-                      </button>
-                    ) : (
-                      <span className="text-[11px] font-mono-numbers text-[#7a6d60]">Bot</span>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -713,22 +866,56 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
           {playModeTab === 'online' ? (
             /* TAB 1: ONLINE MULTIPLAYER */
             <div className="space-y-6 animate-fade-in">
-              <div>
-                <label
-                  htmlFor="player-display-name"
-                  className="block text-sm font-woodcut tracking-wider uppercase text-[#f4efe6] mb-2"
-                >
-                  Your Name
-                </label>
-                <input
-                  id="player-display-name"
-                  type="text"
-                  value={inputName}
-                  onChange={(e) => setInputName(e.target.value)}
-                  placeholder="Enter your name..."
-                  maxLength={20}
-                  className="w-full px-4 py-3 rounded bg-[#100d0b] border border-[#3d332c] text-[#f4efe6] placeholder-[#6e655c] text-sm focus:outline-none focus:border-[#d4a359] transition-colors"
-                />
+              <div className="space-y-4">
+                <div>
+                  <label
+                    htmlFor="player-display-name"
+                    className="block text-sm font-woodcut tracking-wider uppercase text-[#f4efe6] mb-2"
+                  >
+                    Your Name
+                  </label>
+                  <input
+                    id="player-display-name"
+                    type="text"
+                    value={inputName}
+                    onChange={(e) => setInputName(e.target.value)}
+                    placeholder="Enter your name..."
+                    maxLength={20}
+                    className="w-full px-4 py-3 rounded bg-[#100d0b] border border-[#3d332c] text-[#f4efe6] placeholder-[#6e655c] text-sm focus:outline-none focus:border-[#d4a359] transition-colors"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label
+                      htmlFor="player-password"
+                      className="block text-sm font-woodcut tracking-wider uppercase text-[#f4efe6]"
+                    >
+                      One-Time Player Password
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((p) => !p)}
+                      className="text-xs text-[#a89f91] hover:text-[#f4efe6] flex items-center gap-1 cursor-pointer"
+                    >
+                      {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      <span>{showPassword ? 'Hide' : 'Show'}</span>
+                    </button>
+                  </div>
+                  <input
+                    id="player-password"
+                    type={showPassword ? 'text' : 'password'}
+                    value={inputPassword}
+                    onChange={(e) => setInputPassword(e.target.value)}
+                    placeholder="Enter 4–64 character password..."
+                    minLength={4}
+                    maxLength={64}
+                    className="w-full px-4 py-3 rounded bg-[#100d0b] border border-[#3d332c] text-[#f4efe6] placeholder-[#6e655c] text-sm focus:outline-none focus:border-[#d4a359] transition-colors"
+                  />
+                  <p className="text-[11px] text-[#a89f91] mt-1.5 leading-normal">
+                    Make sure you remember this password. In case you get disconnected or want to enter from another device, provide this password after clicking &apos;Sync&apos; with your name to reclaim your seat.
+                  </p>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5 pt-1">
@@ -837,6 +1024,26 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
                     </button>
                     <button
                       type="button"
+                      onClick={() => {
+                        const cleanCode = inputCode.trim().toUpperCase();
+                        if (!cleanCode) {
+                          setErrorMsg('Please enter the 4-letter room code first.');
+                          return;
+                        }
+                        if (inputName.trim()) {
+                          handleStartSyncForSeat(cleanCode, { name: inputName.trim() });
+                        } else {
+                          handleOpenLivePage(cleanCode);
+                        }
+                      }}
+                      disabled={loading}
+                      title="Sync with your name and password to reclaim your seat"
+                      className="py-3 px-3.5 text-xs font-bold uppercase tracking-wider text-[#d4a359] bg-[#241e1a] hover:bg-[#d4a359] hover:text-[#12100e] border border-[#d4a359]/50 rounded transition-colors flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
+                    >
+                      <span>Sync</span>
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => handleOpenLivePage(inputCode)}
                       disabled={loading}
                       title="Open the public Live Room page for this code"
@@ -846,6 +1053,42 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
                       <span>Live Page</span>
                     </button>
                   </div>
+
+                  {syncTarget && syncTarget.roomCode === inputCode.trim().toUpperCase() && !syncTarget.playerId && (
+                    <form
+                      onSubmit={handleConfirmSyncSeat}
+                      className="p-3 rounded bg-[#0d0b09] border border-[#d4a359]/50 space-y-2"
+                    >
+                      <div className="text-[11px] text-[#d4a359] font-semibold">
+                        Provide password to sync as &ldquo;{syncTarget.playerName}&rdquo; in Room {syncTarget.roomCode}:
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type={showPassword ? 'text' : 'password'}
+                          aria-label={`Password to sync with ${syncTarget.playerName}`}
+                          value={syncPassword}
+                          onChange={(e) => setSyncPassword(e.target.value)}
+                          placeholder="Enter your password..."
+                          autoFocus
+                          className="flex-1 px-3 py-1.5 rounded bg-[#14110e] border border-[#3d332c] text-xs text-[#f4efe6] focus:outline-none focus:border-[#d4a359]"
+                        />
+                        <button
+                          type="submit"
+                          disabled={loading}
+                          className="px-3 py-1.5 rounded bg-[#d4a359] hover:bg-[#e0b46e] text-[#12100e] text-[11px] font-bold uppercase tracking-wider cursor-pointer"
+                        >
+                          {loading ? 'Syncing...' : 'Reclaim Seat'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSyncTarget(null)}
+                          className="px-2 py-1.5 rounded bg-[#241e1a] text-[#a89f91] text-[11px] cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  )}
                 </div>
               </div>
 
@@ -877,60 +1120,138 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 gap-2.5">
-                    {publicRooms.map((r) => (
-                      <div
-                        key={r.roomCode}
-                        className="p-3.5 rounded bg-[#14110e] border border-[#2e2621] hover:border-[#d4a359]/50 transition-colors flex flex-wrap items-center justify-between gap-3"
-                      >
-                        <div className="flex items-center gap-3">
-                          <span className="px-2.5 py-1 rounded bg-[#0d0b09] border border-[#3d332c] font-mono-numbers font-bold tracking-widest text-sm text-[#d4a359]">
-                            {r.roomCode}
-                          </span>
-                          <div>
-                            <div className="text-xs font-semibold text-[#f4efe6] flex items-center gap-2">
-                              <span>Host: {r.hostName}</span>
-                              <span className="text-[11px] font-mono-numbers text-[#a89f91]">
-                                · {r.playerCount}/10 Players
+                    {publicRooms.map((r) => {
+                      const realPlayersInRoom = (r.players || []).filter((p) => !p.isBot);
+                      const isSyncingInThisRoom = syncTarget?.roomCode === r.roomCode;
+
+                      return (
+                        <div
+                          key={r.roomCode}
+                          className="p-3.5 rounded bg-[#14110e] border border-[#2e2621] hover:border-[#d4a359]/50 transition-colors space-y-3"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div className="flex items-center gap-3">
+                              <span className="px-2.5 py-1 rounded bg-[#0d0b09] border border-[#3d332c] font-mono-numbers font-bold tracking-widest text-sm text-[#d4a359]">
+                                {r.roomCode}
                               </span>
+                              <div>
+                                <div className="text-xs font-semibold text-[#f4efe6] flex items-center gap-2">
+                                  <span>Host: {r.hostName}</span>
+                                  <span className="text-[11px] font-mono-numbers text-[#a89f91]">
+                                    · {r.playerCount}/10 Players
+                                  </span>
+                                </div>
+                                <div className="text-[11px] font-mono-numbers text-[#a89f91]">
+                                  {r.started
+                                    ? `In Game (${r.phase}) · Lib ${r.liberalPolicies}/5 · Fas ${r.fascistPolicies}/6`
+                                    : 'Waiting in Lobby'}
+                                  {' · '}
+                                  <span className="text-emerald-400">{r.liveUrl}</span>
+                                </div>
+                              </div>
                             </div>
-                            <div className="text-[11px] font-mono-numbers text-[#a89f91]">
-                              {r.started
-                                ? `In Game (${r.phase}) · Lib ${r.liberalPolicies}/5 · Fas ${r.fascistPolicies}/6`
-                                : 'Waiting in Lobby'}
-                              {' · '}
-                              <span className="text-emerald-400">{r.liveUrl}</span>
+
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenLivePage(r.roomCode)}
+                                className="px-3 py-1.5 rounded bg-[#241e1a] hover:bg-[#322923] border border-[#3d332c] text-[11px] font-bold uppercase tracking-wider text-[#d4a359] cursor-pointer"
+                              >
+                                Open Live Page
+                              </button>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  setInputCode(r.roomCode);
+                                  if (inputName.trim()) {
+                                    const cleanPw = inputPassword.trim();
+                                    if (!cleanPw || cleanPw.length < 4 || cleanPw.length > 64) {
+                                      setErrorMsg(
+                                        'Please enter your password (4–64 characters) to secure your seat.'
+                                      );
+                                      return;
+                                    }
+                                    setLoading(true);
+                                    const res = await onJoinRoom(r.roomCode, inputName.trim(), cleanPw);
+                                    setLoading(false);
+                                    if (!res.success) setErrorMsg(res.error || 'Failed to join');
+                                  } else {
+                                    handleOpenLivePage(r.roomCode);
+                                  }
+                                }}
+                                className="px-3 py-1.5 rounded bg-[#c83228] hover:bg-[#df3b30] text-[11px] font-bold uppercase tracking-wider text-[#f4efe6] cursor-pointer"
+                              >
+                                Join
+                              </button>
                             </div>
                           </div>
-                        </div>
 
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => handleOpenLivePage(r.roomCode)}
-                            className="px-3 py-1.5 rounded bg-[#241e1a] hover:bg-[#322923] border border-[#3d332c] text-[11px] font-bold uppercase tracking-wider text-[#d4a359] cursor-pointer"
-                          >
-                            Open Live Page
-                          </button>
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              setInputCode(r.roomCode);
-                              if (inputName.trim()) {
-                                setLoading(true);
-                                const res = await onJoinRoom(r.roomCode, inputName.trim());
-                                setLoading(false);
-                                if (!res.success) setErrorMsg(res.error || 'Failed to join');
-                              } else {
-                                handleOpenLivePage(r.roomCode);
-                              }
-                            }}
-                            className="px-3 py-1.5 rounded bg-[#c83228] hover:bg-[#df3b30] text-[11px] font-bold uppercase tracking-wider text-[#f4efe6] cursor-pointer"
-                          >
-                            Join
-                          </button>
+                          {/* Real Player Names on the Game with 'Sync' Button */}
+                          {realPlayersInRoom.length > 0 && (
+                            <div className="pt-2 border-t border-[#26201b] flex flex-wrap items-center gap-2">
+                              <span className="text-[11px] font-mono-numbers text-[#a89f91]">
+                                Players on game:
+                              </span>
+                              {realPlayersInRoom.map((p) => (
+                                <div
+                                  key={p.id}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#0d0b09] border border-[#2e2621] text-xs"
+                                >
+                                  <span className="text-[#f4efe6] font-medium">{p.name}</span>
+                                  {p.isHost && (
+                                    <Crown className="w-3 h-3 text-[#d4a359]" />
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleStartSyncForSeat(r.roomCode, p)}
+                                    aria-label={`Sync with ${p.name} in room ${r.roomCode}`}
+                                    className="ml-1 px-2 py-0.5 rounded bg-[#241e1a] hover:bg-[#d4a359] text-[#d4a359] hover:text-[#12100e] border border-[#d4a359]/40 text-[10px] font-bold uppercase tracking-wider transition-colors cursor-pointer"
+                                  >
+                                    Sync
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {isSyncingInThisRoom && syncTarget && (
+                            <form
+                              onSubmit={handleConfirmSyncSeat}
+                              className="p-3 rounded bg-[#0d0b09] border border-[#d4a359]/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                            >
+                              <span className="text-xs text-[#d4a359] font-semibold">
+                                Provide password for &ldquo;{syncTarget.playerName}&rdquo; to reclaim seat:
+                              </span>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type={showPassword ? 'text' : 'password'}
+                                  aria-label={`Password to sync with ${syncTarget.playerName}`}
+                                  value={syncPassword}
+                                  onChange={(e) => setSyncPassword(e.target.value)}
+                                  placeholder="Enter your password..."
+                                  autoFocus
+                                  className="px-3 py-1.5 rounded bg-[#14110e] border border-[#3d332c] text-xs text-[#f4efe6] focus:outline-none focus:border-[#d4a359]"
+                                />
+                                <button
+                                  type="submit"
+                                  disabled={loading}
+                                  className="px-3 py-1.5 rounded bg-[#d4a359] hover:bg-[#e0b46e] text-[#12100e] text-[11px] font-bold uppercase tracking-wider cursor-pointer shrink-0"
+                                >
+                                  {loading ? 'Syncing...' : 'Reclaim Seat'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setSyncTarget(null)}
+                                  className="px-2 py-1.5 rounded bg-[#241e1a] text-[#a89f91] hover:text-[#f4efe6] text-[11px] cursor-pointer"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </form>
+                          )}
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -984,9 +1305,13 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
                       #{idx + 1}
                     </span>
                     {seat.isBot ? (
-                      <Bot className="w-4 h-4 text-[#a89f91] shrink-0" title="Bot Player" />
+                      <span title="Bot Player" className="shrink-0 inline-flex">
+                        <Bot className="w-4 h-4 text-[#a89f91]" />
+                      </span>
                     ) : (
-                      <User className="w-4 h-4 text-[#d4a359] shrink-0" title="Human Player" />
+                      <span title="Human Player" className="shrink-0 inline-flex">
+                        <User className="w-4 h-4 text-[#d4a359]" />
+                      </span>
                     )}
                     <input
                       type="text"

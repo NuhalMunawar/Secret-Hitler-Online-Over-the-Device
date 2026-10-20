@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   BookOpen,
   Copy,
@@ -8,7 +8,9 @@ import {
   Volume2,
   VolumeX,
   Smartphone,
-  Radio,
+  Music,
+  Sparkles,
+  Sliders,
 } from 'lucide-react';
 import { sound } from '../utils/sound.js';
 
@@ -34,6 +36,18 @@ export const Header: React.FC<HeaderProps> = ({
   const [copied, setCopied] = useState(false);
   const [muted, setMuted] = useState(sound.muted);
   const [ambience, setAmbience] = useState(sound.ambienceActive);
+  const [ambienceVol, setAmbienceVol] = useState(sound.ambienceVolume);
+  const [animationsOn, setAnimationsOn] = useState(sound.animationsEnabled);
+  const [showVolumeSlider, setShowVolumeSlider] = useState(false);
+
+  useEffect(() => {
+    return sound.subscribe(() => {
+      setMuted(sound.muted);
+      setAmbience(sound.ambienceActive);
+      setAmbienceVol(sound.ambienceVolume);
+      setAnimationsOn(sound.animationsEnabled);
+    });
+  }, []);
 
   const copyRoomLink = () => {
     if (!roomCode) return;
@@ -48,13 +62,28 @@ export const Header: React.FC<HeaderProps> = ({
   const handleToggleSound = () => {
     const next = sound.toggleMute();
     setMuted(next);
-    if (next) setAmbience(false);
   };
 
   const handleToggleAmbience = () => {
+    sound.playClick();
     const active = sound.toggleAmbience();
     setAmbience(active);
-    setMuted(sound.muted);
+  };
+
+  const handleToggleAnimations = () => {
+    sound.playClick();
+    const next = sound.toggleAnimations();
+    setAnimationsOn(next);
+  };
+
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseFloat(e.target.value);
+    setAmbienceVol(val);
+    sound.setAmbienceVolume(val);
+    if (!ambience && val > 0) {
+      sound.startAmbience();
+      setAmbience(true);
+    }
   };
 
   return (
@@ -123,26 +152,119 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         )}
 
+        {/* Animations toggle */}
         <button
-          onClick={handleToggleAmbience}
-          aria-label={ambience ? 'Disable tabletop atmosphere drone' : 'Enable tabletop atmosphere drone'}
-          title={ambience ? 'Disable tabletop atmosphere' : 'Enable tabletop atmosphere'}
-          className={`flex items-center gap-1 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-            ambience ? 'text-emerald-400 font-semibold' : 'text-[#a89f91] hover:text-[#f4efe6]'
+          onClick={handleToggleAnimations}
+          aria-label={animationsOn ? 'Disable animations' : 'Enable animations'}
+          title="Enable/disable chancellor suspense check & policy slam animations"
+          className={`flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer px-2 py-1 rounded border ${
+            animationsOn
+              ? 'text-emerald-300 bg-emerald-950/40 border-emerald-500/40'
+              : 'text-[#8c8275] bg-[#1a1613] border-[#362e27] hover:text-[#f4efe6]'
           }`}
         >
-          <Radio className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">{ambience ? 'Ambience On' : 'Ambience'}</span>
+          <Sparkles className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Animations: {animationsOn ? 'ON' : 'OFF'}</span>
         </button>
 
+        {/* Ambience music toggle & volume control */}
+        <div className="relative flex items-center shrink-0">
+          <div
+            className={`flex items-center gap-1 rounded border px-2 py-1 transition-colors ${
+              ambience
+                ? 'text-emerald-300 bg-emerald-950/40 border-emerald-500/40'
+                : 'text-[#8c8275] bg-[#1a1613] border-[#362e27]'
+            }`}
+          >
+            <button
+              onClick={handleToggleAmbience}
+              aria-label={ambience ? 'Pause suspense music' : 'Play suspense music'}
+              title={ambience ? 'Pause suspense background music' : 'Play suspense background music'}
+              className="flex items-center gap-1 cursor-pointer hover:text-[#f4efe6]"
+            >
+              <Music className={`w-3.5 h-3.5 ${ambience ? 'animate-pulse text-emerald-400' : ''}`} />
+              <span className="hidden sm:inline">Music: {ambience ? 'ON' : 'OFF'}</span>
+            </button>
+
+            <button
+              onClick={() => {
+                sound.playClick();
+                setShowVolumeSlider((prev) => !prev);
+              }}
+              aria-label="Adjust ambience music volume"
+              title="Ambience music volume"
+              className="ml-1 text-[#a89f91] hover:text-[#f4efe6] cursor-pointer"
+            >
+              <Sliders className="w-3 h-3" />
+            </button>
+          </div>
+
+          {/* Ambience Volume Popover Slider */}
+          {showVolumeSlider && (
+            <div className="absolute top-full mt-2 right-0 bg-[#181411] border border-[#3d332c] rounded-lg p-3 shadow-2xl z-50 w-48 space-y-2 animate-fade-in">
+              <div className="flex items-center justify-between text-[11px] font-mono-numbers text-[#a89f91]">
+                <span>Music Volume</span>
+                <span className="text-[#d4a359] font-bold">{Math.round(ambienceVol * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={ambienceVol}
+                onChange={handleVolumeChange}
+                aria-label="Ambience volume"
+                className="w-full accent-[#d4a359] cursor-pointer"
+              />
+              <div className="flex justify-between text-[10px] text-[#7a6d60]">
+                <button
+                  onClick={() => {
+                    sound.playClick();
+                    setAmbienceVol(0);
+                    sound.setAmbienceVolume(0);
+                  }}
+                  className="hover:text-[#f4efe6] cursor-pointer"
+                >
+                  Mute
+                </button>
+                <button
+                  onClick={() => {
+                    sound.playClick();
+                    setAmbienceVol(0.28);
+                    sound.setAmbienceVolume(0.28);
+                  }}
+                  className="hover:text-[#f4efe6] cursor-pointer"
+                >
+                  Default (28%)
+                </button>
+                <button
+                  onClick={() => {
+                    sound.playClick();
+                    setAmbienceVol(1);
+                    sound.setAmbienceVolume(1);
+                  }}
+                  className="hover:text-[#f4efe6] cursor-pointer"
+                >
+                  100%
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Sound FX Toggle */}
         <button
           onClick={handleToggleSound}
           aria-label={muted ? 'Unmute sound effects' : 'Mute sound effects'}
           title={muted ? 'Unmute sound effects' : 'Mute sound effects'}
-          className="flex items-center gap-1 text-[#a89f91] hover:text-[#f4efe6] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          className={`flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer px-2 py-1 rounded border ${
+            !muted
+              ? 'text-[#d4a359] bg-[#241e1a] border-[#3d332c]'
+              : 'text-[#c83228] bg-[#261210] border-[#59221d]'
+          }`}
         >
-          {muted ? <VolumeX className="w-4 h-4 text-[#c83228]" /> : <Volume2 className="w-4 h-4 text-[#d4a359]" />}
-          <span className="hidden md:inline">{muted ? 'Muted' : 'Sound FX'}</span>
+          {muted ? <VolumeX className="w-3.5 h-3.5 text-[#c83228]" /> : <Volume2 className="w-3.5 h-3.5 text-[#d4a359]" />}
+          <span className="hidden md:inline">{muted ? 'SFX: OFF' : 'SFX: ON'}</span>
         </button>
       </nav>
 

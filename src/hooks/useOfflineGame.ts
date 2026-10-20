@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { GameEngine } from '../game/GameEngine.js';
 import { HitlerSuspenseCheck, NightInfo, Policy, PublicGameState, Vote } from '../game/types.js';
 import { sound } from '../utils/sound.js';
+import { PolicyEnactedEvent } from '../components/PolicyEnactmentModal.js';
 
 export interface OfflinePlayerEntry {
   id: string;
@@ -47,6 +48,9 @@ export function useOfflineGame(
   // Hitler Suspense Check (for Chancellor elected at 3+ Fascist or Player executed)
   const [chancellorSuspenseCheck, setChancellorSuspenseCheck] =
     useState<HitlerSuspenseCheck | null>(null);
+
+  // Policy Enactment Animation Event
+  const [enactedPolicyEvent, setEnactedPolicyEvent] = useState<PolicyEnactedEvent | null>(null);
 
   // Game Over data
   const [gameOverData, setGameOverData] = useState<{
@@ -130,8 +134,15 @@ export function useOfflineGame(
               roles: eng.getAllRoles(),
             });
           } else {
-            if (res.policy === 'LIBERAL') sound.playLiberalPolicy();
-            else sound.playFascistPolicy();
+            if (res.policy) {
+              const slot =
+                res.policy === 'LIBERAL' ? eng.liberalPolicies : eng.fascistPolicies;
+              setEnactedPolicyEvent({
+                policy: res.policy,
+                slotNumber: slot,
+                executiveAction: res.executiveAction,
+              });
+            }
             showNotification(
               `A ${res.policy} Policy has been enacted!`,
               res.policy === 'LIBERAL' ? 'success' : 'alert'
@@ -358,6 +369,16 @@ export function useOfflineGame(
     }
 
     if (res.chaos) {
+      if (res.chaosPolicy) {
+        const slot =
+          res.chaosPolicy === 'LIBERAL' ? eng.liberalPolicies : eng.fascistPolicies;
+        setEnactedPolicyEvent({
+          policy: res.chaosPolicy,
+          slotNumber: slot,
+          executiveAction: res.executiveAction,
+          isChaos: true,
+        });
+      }
       sound.playChaos();
       showNotification(
         `3 Failed Elections — CHAOS! Top policy (${res.chaosPolicy}) enacted!`,
@@ -456,8 +477,15 @@ export function useOfflineGame(
       return;
     }
 
-    if (res.policy === 'LIBERAL') sound.playLiberalPolicy();
-    else sound.playFascistPolicy();
+    if (res.policy) {
+      const slot =
+        res.policy === 'LIBERAL' ? engine.liberalPolicies : engine.fascistPolicies;
+      setEnactedPolicyEvent({
+        policy: res.policy,
+        slotNumber: slot,
+        executiveAction: res.executiveAction,
+      });
+    }
 
     showNotification(
       `A ${res.policy} Policy has been enacted!`,
@@ -683,6 +711,8 @@ export function useOfflineGame(
     lastElectionVotes,
     chancellorSuspenseCheck,
     dismissChancellorSuspense,
+    enactedPolicyEvent,
+    dismissEnactedPolicy: () => setEnactedPolicyEvent(null),
     gameOverData,
     startOfflineGame,
     nominateChancellor,

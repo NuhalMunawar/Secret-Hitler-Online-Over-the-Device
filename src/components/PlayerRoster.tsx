@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Crown, Check, X, Bot, Eye } from 'lucide-react';
 import { PublicPlayer, Spectator, Vote } from '../game/types.js';
 
@@ -8,6 +8,8 @@ interface PlayerRosterProps {
   currentUserId: string | null;
   lastVotes: Record<string, Vote> | null;
   isVotingPhase: boolean;
+  isSpectator?: boolean;
+  onSyncSeat?: (playerId: string, playerName: string, password: string) => Promise<{ success: boolean; error?: string }>;
 }
 
 export const PlayerRoster: React.FC<PlayerRosterProps> = ({
@@ -16,7 +18,33 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
   currentUserId,
   lastVotes,
   isVotingPhase,
+  isSpectator = false,
+  onSyncSeat,
 }) => {
+  const [syncSeatId, setSyncSeatId] = useState<string | null>(null);
+  const [syncPassword, setSyncPassword] = useState('');
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncLoading, setSyncLoading] = useState(false);
+
+  const handleConfirmSync = async (e: React.FormEvent, player: PublicPlayer) => {
+    e.preventDefault();
+    if (!onSyncSeat) return;
+    setSyncError(null);
+    const cleanPw = syncPassword.trim();
+    if (!cleanPw || cleanPw.length < 4 || cleanPw.length > 64) {
+      setSyncError('Enter 4–64 character password.');
+      return;
+    }
+    setSyncLoading(true);
+    const res = await onSyncSeat(player.id, player.name, cleanPw);
+    setSyncLoading(false);
+    if (!res.success) {
+      setSyncError(res.error || 'Incorrect password');
+    } else {
+      setSyncSeatId(null);
+      setSyncPassword('');
+    }
+  };
   return (
     <div className="w-full space-y-4">
       <div className="bg-[#181411] border border-[#332a24] rounded-lg p-4 md:p-5 tactile-card-shadow">
@@ -53,12 +81,33 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
                   <div className="flex items-center justify-between gap-1 text-[10px] font-mono-numbers text-[#a89f91] mb-1">
                     <span>SEAT #{idx + 1}</span>
                     <div className="flex items-center gap-1">
-                      {p.isHost && <Crown className="w-3 h-3 text-[#d4a359]" title="Host" />}
-                      {p.isBot && <Bot className="w-3 h-3 text-[#a89f91]" title="Automated Agent" />}
+                      {p.isHost && (
+                        <span title="Host" className="inline-flex">
+                          <Crown className="w-3 h-3 text-[#d4a359]" />
+                        </span>
+                      )}
+                      {p.isBot && (
+                        <span title="Automated Agent" className="inline-flex">
+                          <Bot className="w-3 h-3 text-[#a89f91]" />
+                        </span>
+                      )}
                       {isMe && (
                         <span className="px-1.5 py-0.2 bg-[#d4a359]/20 text-[#d4a359] rounded font-bold">
                           YOU
                         </span>
+                      )}
+                      {isSpectator && !p.isBot && onSyncSeat && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSyncError(null);
+                            setSyncSeatId((prev) => (prev === p.id ? null : p.id));
+                          }}
+                          aria-label={`Sync with ${p.name}`}
+                          className="px-2 py-0.5 rounded bg-[#241e1a] hover:bg-[#d4a359] text-[#d4a359] hover:text-[#12100e] border border-[#d4a359]/40 text-[9px] font-bold uppercase tracking-wider transition-colors cursor-pointer"
+                        >
+                          Sync
+                        </button>
                       )}
                     </div>
                   </div>
@@ -117,12 +166,12 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
                           CHANCELLOR
                         </span>
                       )}
-                      {!p.isPresident && !p.isChancellor && p.wasLastPresident && (
+                      {!p.isPresident && !p.isChancellor && p.isPreviousPresident && (
                         <span className="px-1.5 py-0.5 text-[9px] font-mono-numbers uppercase bg-[#241e1a] text-[#a89f91] rounded border border-[#382f29]">
                           Prev. Pres
                         </span>
                       )}
-                      {!p.isPresident && !p.isChancellor && p.wasLastChancellor && (
+                      {!p.isPresident && !p.isChancellor && p.isPreviousChancellor && (
                         <span className="px-1.5 py-0.5 text-[9px] font-mono-numbers uppercase bg-[#241e1a] text-[#a89f91] rounded border border-[#382f29]">
                           Term-Limited
                         </span>
@@ -162,6 +211,42 @@ export const PlayerRoster: React.FC<PlayerRosterProps> = ({
                     </span>
                   )}
                 </div>
+
+                {isSpectator && !p.isBot && syncSeatId === p.id && (
+                  <form
+                    onSubmit={(e) => handleConfirmSync(e, p)}
+                    className="pt-2 border-t border-[#2e2621] space-y-1.5"
+                  >
+                    <input
+                      type="password"
+                      aria-label={`Password to sync with ${p.name}`}
+                      value={syncPassword}
+                      onChange={(e) => setSyncPassword(e.target.value)}
+                      placeholder="Seat password..."
+                      autoFocus
+                      className="w-full px-2 py-1 rounded bg-[#0d0b09] border border-[#d4a359]/60 text-[11px] text-[#f4efe6] focus:outline-none focus:border-[#d4a359]"
+                    />
+                    {syncError && (
+                      <div className="text-[10px] text-[#e86f5c]">{syncError}</div>
+                    )}
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="submit"
+                        disabled={syncLoading}
+                        className="flex-1 py-1 rounded bg-[#d4a359] hover:bg-[#e0b46e] text-[#12100e] text-[10px] font-bold uppercase tracking-wider cursor-pointer"
+                      >
+                        {syncLoading ? '...' : 'Reclaim Seat'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSyncSeatId(null)}
+                        className="px-2 py-1 rounded bg-[#241e1a] text-[#a89f91] text-[10px] cursor-pointer"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </form>
+                )}
               </div>
             );
           })}

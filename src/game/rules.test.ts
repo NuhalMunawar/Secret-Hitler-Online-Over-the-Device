@@ -309,14 +309,19 @@ test('Table Approved/Rejected omits LastVoteDetails and Government History recor
 });
 
 test('Live Room serialization, getLiveSnapshot, and multi-device seat synchronization', () => {
-  const room = new Room('host_1', 'Alice');
-  room.addPlayer('p_2', 'Bob');
-  room.addPlayer('p_3', 'Charlie');
-  room.addPlayer('p_4', 'Diana');
-  room.addPlayer('p_5', 'Evan');
+  const room = new Room('host_1', 'Alice', undefined, undefined, false, 'aliceSecret');
+  room.addPlayer('p_2', 'Bob', 'bobSecret123');
+  room.addPlayer('p_3', 'Charlie', 'charliePass');
+  room.addPlayer('p_4', 'Diana', 'dianaPass');
+  room.addPlayer('p_5', 'Evan', 'evanPass');
 
-  // Re-joining with existing name on another device should seamlessly reconnect to that seat
-  const reconnectByName = room.addPlayer('new_device_id', 'Bob');
+  // Re-joining with incorrect password should be rejected
+  const wrongPasswordAttempt = room.addPlayer('new_device_id', 'Bob', 'wrongPassword');
+  assert.equal(wrongPasswordAttempt.success, false);
+  assert.ok(wrongPasswordAttempt.error?.includes('Incorrect password'));
+
+  // Re-joining with matching password on another device seamlessly reconnects to that seat
+  const reconnectByName = room.addPlayer('new_device_id', 'Bob', 'bobSecret123');
   assert.equal(reconnectByName.success, true);
   assert.equal(reconnectByName.reconnected, true);
   assert.equal(reconnectByName.playerId, 'p_2');
@@ -375,6 +380,85 @@ test('Host can remove any player before game starts and room supports Public/Pri
   const afterStartKick = privateRoom.kickPlayer('host_1', 'p_3');
   assert.equal(afterStartKick.success, false);
 });
+
+test('While game is running, leaving or disconnecting keeps player name on the game so they can sync with that name', () => {
+  const room = new Room('host_1', 'Alice', 'sock_1', undefined, false, 'passAlice');
+  room.addPlayer('p_2', 'Bob', 'passBob', 'sock_2');
+  room.addBot();
+  room.addBot();
+  room.addBot();
+
+  assert.equal(room.startGame().success, true);
+  assert.equal(room.isGameRunning(), true);
+
+  // 1. Bob leaves the room while the game is running
+  const leaveBob = room.removePlayer('p_2');
+  assert.equal(leaveBob.shouldCloseRoom, false);
+
+  // Bob's name is still on the game (both in room.getPlayerList() and gameState.players)
+  assert.ok(room.getPlayerList().some((p) => p.name === 'Bob'));
+  assert.ok(room.getPublicGameState()?.players.some((p) => p.name === 'Bob'));
+
+  // 2. Host Alice ALSO leaves the room while the game is running (only bots connected now)
+  const leaveAlice = room.removePlayer('host_1');
+  assert.equal(leaveAlice.shouldCloseRoom, false);
+  // Bots never become host
+  assert.ok(!room.getPlayerList().some((p) => p.isBot && p.isHost));
+  // Alice's name is still on the game
+  assert.ok(room.getPlayerList().some((p) => p.name === 'Alice'));
+
+  // 3. Wrong password cannot sync to Bob's seat
+  const badSync = room.addPlayer('new_id_1', 'Bob', 'wrongPw', 'sock_new_1');
+  assert.equal(badSync.success, false);
+
+  // 4. Bob syncs with his name and correct password to reclaim his seat
+  const goodSyncBob = room.addPlayer('new_id_2', 'Bob', 'passBob', 'sock_new_2');
+  assert.equal(goodSyncBob.success, true);
+  assert.equal(goodSyncBob.reconnected, true);
+  assert.equal(goodSyncBob.playerId, 'p_2');
+  assert.equal(goodSyncBob.isSpectator, false);
+
+  // 5. Alice syncs with her name and correct password to reclaim her seat
+  const goodSyncAlice = room.addPlayer('new_id_3', 'Alice', 'passAlice', 'sock_new_3');
+  assert.equal(goodSyncAlice.success, true);
+  assert.equal(goodSyncAlice.reconnected, true);
+  assert.equal(goodSyncAlice.playerId, 'host_1');
+});
+
+test('When game has ended, if host leaves another real player becomes host; bots are never hosts; if no real player remains room closes', () => {
+  const room = new Room('host_1', 'Alice', 'sock_1', undefined, false, 'passAlice');
+  room.addPlayer('p_2', 'Bob', 'passBob', 'sock_2');
+  room.addBot();
+  room.addBot();
+  room.addBot();
+
+  assert.equal(room.startGame().success, true);
+
+  // Conclude the game (GAME_OVER)
+  room.game!.liberalPolicies = 5;
+  room.game!.winner = 'LIBERAL';
+  room.game!.winReason = '5 Liberal policies have been enacted!';
+  room.game!.phase = 'GAME_OVER';
+  assert.equal(room.isGameEnded(), true);
+
+  // 1. Host Alice leaves the room after the game has ended -> real player Bob becomes host
+  const res1 = room.removePlayer('host_1');
+  assert.equal(res1.wasHost, true);
+  assert.equal(res1.shouldCloseRoom, false);
+  assert.equal(room.hostId, 'p_2');
+  assert.equal(room.getLiveSnapshot('p_2').isHost, true);
+  // Ensure no bot is marked as host
+  assert.equal(room.getPlayerList().some((p) => p.isBot && p.isHost), false);
+
+  // 2. Now Bob (the last real player) leaves the room -> bots never become host, and room is closed
+  const res2 = room.removePlayer('p_2');
+  assert.equal(res2.wasHost, true);
+  assert.equal(res2.remainingRealPlayers, 0);
+  assert.equal(res2.shouldCloseRoom, true);
+  assert.equal(room.hostId, '');
+  assert.equal(room.getPlayerList().some((p) => p.isBot && p.isHost), false);
+});
+
 
 
 

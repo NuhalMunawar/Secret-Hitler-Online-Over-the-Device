@@ -22,7 +22,15 @@ export const ChancellorSuspenseModal: React.FC<ChancellorSuspenseModalProps> = (
     }
 
     setRevealed(false);
-    // Play the intense mysterious 3.15s suspense sound
+
+    if (!sound.animationsEnabled) {
+      // Skip suspense animation frame when disabled by user
+      setRevealed(true);
+      sound.playSuspenseReveal(check.isHitler);
+      return;
+    }
+
+    // Play the intense mysterious 3.15s suspense sound and frame
     sound.playChancellorSuspense();
 
     const timer = setTimeout(() => {

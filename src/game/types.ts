@@ -43,6 +43,7 @@ export interface PublicPlayer {
   investigatedByPresident?: boolean;
   hasVoted?: boolean;
   isBot?: boolean;
+  isHost?: boolean;
   governmentHistory: Policy[];
 }
 

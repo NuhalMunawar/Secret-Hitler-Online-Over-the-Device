@@ -5,8 +5,10 @@ export interface RoomPlayer {
   id: string;
   name: string;
   socketId: string;
+  password?: string;
   isBot?: boolean;
   connected?: boolean;
+  leftWhileRunning?: boolean;
 }
 
 export interface RoomSpectator {
@@ -34,7 +36,8 @@ export class Room {
     hostName: string,
     socketId?: string,
     existingCode?: string,
-    isPrivate = false
+    isPrivate = false,
+    hostPassword?: string
   ) {
     this.code = existingCode || this.generateCode();
     this.hostId = hostId;
@@ -46,6 +49,7 @@ export class Room {
         id: hostId,
         name: hostName.trim() || 'Player 1',
         socketId: socketId || hostId,
+        password: (hostPassword || '').trim() || undefined,
         connected: true,
       });
     }
@@ -74,11 +78,38 @@ export class Room {
     return code;
   }
 
+  isGameRunning(): boolean {
+    return Boolean(
+      this.started &&
+        this.game &&
+        this.game.phase !== 'LOBBY' &&
+        this.game.phase !== 'GAME_OVER'
+    );
+  }
+
+  isGameEnded(): boolean {
+    return Boolean(this.started && this.game && this.game.phase === 'GAME_OVER');
+  }
+
+  ensureRealPlayerHost() {
+    const currentHost = this.players.find((p) => p.id === this.hostId);
+    if (!currentHost || currentHost.isBot || currentHost.leftWhileRunning) {
+      const nextReal =
+        this.players.find((p) => !p.isBot && !p.leftWhileRunning && p.connected !== false) ||
+        this.players.find((p) => !p.isBot && !p.leftWhileRunning) ||
+        this.players.find((p) => !p.isBot);
+      this.hostId = nextReal ? nextReal.id : '';
+    }
+  }
+
   setPlayerSocketId(playerId: string, socketId: string, connected = true) {
     const player = this.players.find((p) => p.id === playerId);
     if (player) {
       if (socketId) player.socketId = socketId;
       player.connected = connected;
+      if (connected) {
+        player.leftWhileRunning = false;
+      }
     }
     const spec = this.spectators.find((s) => s.id === playerId);
     if (spec) {
@@ -92,7 +123,7 @@ export class Room {
     return this.players.map((p) => ({
       id: p.id,
       name: p.name,
-      isHost: p.id === this.hostId,
+      isHost: !p.isBot && p.id === this.hostId,
       isBot: p.isBot || false,
       connected: p.isBot ? true : p.connected !== false,
     }));
@@ -108,6 +139,7 @@ export class Room {
   addPlayer(
     id: string,
     name: string,
+    password?: string,
     socketId?: string,
     claimPlayerId?: string
   ): {
@@ -118,12 +150,26 @@ export class Room {
     reconnected?: boolean;
     error?: string;
   } {
+    const cleanPassword = (password || '').trim();
+
     // 1. Check if claiming an explicit player seat by ID
     if (claimPlayerId) {
       const target = this.players.find((p) => p.id === claimPlayerId && !p.isBot);
       if (target) {
+        if (target.password && target.password !== cleanPassword) {
+          return {
+            success: false,
+            error: 'Incorrect password for this player seat. Enter the password created for this seat to sync.',
+          };
+        }
+        if (!target.password && cleanPassword && cleanPassword.length >= 4 && cleanPassword.length <= 64) {
+          target.password = cleanPassword;
+        }
         if (socketId) target.socketId = socketId;
         target.connected = true;
+        target.leftWhileRunning = false;
+        this.spectators = this.spectators.filter((s) => s.id !== id && s.id !== target.id);
+        this.ensureRealPlayerHost();
         this.touch();
         return {
           success: true,
@@ -141,13 +187,27 @@ export class Room {
     }
 
     // 2. If a human player with this exact name (or ID) is already seated in the room,
-    // seamlessly reconnect/sync them to their seat instead of rejecting!
-    const existingHuman = this.players.find(
-      (p) => !p.isBot && (p.id === id || p.name.toLowerCase() === cleanName.toLowerCase())
-    );
+    // verify password and seamlessly reconnect/sync them to their seat!
+    const existingHuman =
+      this.players.find(
+        (p) => !p.isBot && p.name.toLowerCase() === cleanName.toLowerCase()
+      ) ||
+      this.players.find((p) => !p.isBot && p.id === id);
     if (existingHuman) {
+      if (existingHuman.password && existingHuman.password !== cleanPassword) {
+        return {
+          success: false,
+          error: `Incorrect password for player "${existingHuman.name}". Enter the password created for this seat to sync.`,
+        };
+      }
+      if (!existingHuman.password && cleanPassword && cleanPassword.length >= 4 && cleanPassword.length <= 64) {
+        existingHuman.password = cleanPassword;
+      }
       if (socketId) existingHuman.socketId = socketId;
       existingHuman.connected = true;
+      existingHuman.leftWhileRunning = false;
+      this.spectators = this.spectators.filter((s) => s.id !== id && s.id !== existingHuman.id);
+      this.ensureRealPlayerHost();
       this.touch();
       return {
         success: true,
@@ -215,10 +275,21 @@ export class Room {
       }
     }
 
+    const finalPassword =
+      cleanPassword || (password === undefined ? `pw_${id.replace(/[^a-zA-Z0-9]/g, '')}`.padEnd(6, '0').substring(0, 16) : '');
+
+    if (!finalPassword || finalPassword.length < 4 || finalPassword.length > 64) {
+      return {
+        success: false,
+        error: 'Please enter a recovery password between 4 and 64 characters.',
+      };
+    }
+
     this.players.push({
       id,
       name: cleanName,
       socketId: socketId || id,
+      password: finalPassword,
       connected: true,
     });
     this.touch();
@@ -329,27 +400,121 @@ export class Room {
     return { success: false, error: 'Player not found in room' };
   }
 
-  removePlayer(id: string): { remaining: number; wasHost: boolean; wasSpectator: boolean } {
+  removePlayer(id: string): {
+    remaining: number;
+    remainingRealPlayers: number;
+    wasHost: boolean;
+    wasSpectator: boolean;
+    shouldCloseRoom: boolean;
+    newHostId: string;
+  } {
     const specIdx = this.spectators.findIndex((s) => s.id === id);
     if (specIdx !== -1) {
       this.spectators.splice(specIdx, 1);
+      const realPlayers = this.players.filter((p) => !p.isBot && !p.leftWhileRunning);
+      const shouldCloseRoom = !this.isGameRunning() && realPlayers.length === 0;
       this.touch();
-      return { remaining: this.players.length, wasHost: false, wasSpectator: true };
+      return {
+        remaining: realPlayers.length,
+        remainingRealPlayers: realPlayers.length,
+        wasHost: false,
+        wasSpectator: true,
+        shouldCloseRoom,
+        newHostId: this.hostId,
+      };
     }
 
     const idx = this.players.findIndex((p) => p.id === id);
-    if (idx === -1) return { remaining: this.players.length, wasHost: false, wasSpectator: false };
+    if (idx === -1) {
+      const realPlayers = this.players.filter((p) => !p.isBot && !p.leftWhileRunning);
+      const shouldCloseRoom = !this.isGameRunning() && realPlayers.length === 0;
+      return {
+        remaining: realPlayers.length,
+        remainingRealPlayers: realPlayers.length,
+        wasHost: false,
+        wasSpectator: false,
+        shouldCloseRoom,
+        newHostId: this.hostId,
+      };
+    }
 
-    const wasHost = this.players[idx].id === this.hostId;
+    const targetPlayer = this.players[idx];
+    const wasHost = targetPlayer.id === this.hostId;
+
+    // While the game is running, keep the player's name and seat on the game
+    // so they can sync with their name and password to reclaim their seat.
+    if (this.isGameRunning()) {
+      targetPlayer.connected = false;
+      targetPlayer.socketId = '';
+      targetPlayer.leftWhileRunning = true;
+
+      if (wasHost) {
+        const activeReal =
+          this.players.find((p) => !p.isBot && !p.leftWhileRunning && p.connected !== false) ||
+          this.players.find((p) => !p.isBot && !p.leftWhileRunning);
+        if (activeReal) {
+          this.hostId = activeReal.id;
+        }
+        // Note: if no other active real player is currently in the room during the running game,
+        // keep this real player as hostId (bots will never be hosts) so they remain host when syncing back.
+      }
+
+      const allRealPlayers = this.players.filter((p) => !p.isBot);
+      this.touch();
+      return {
+        remaining: this.players.length,
+        remainingRealPlayers: allRealPlayers.length,
+        wasHost,
+        wasSpectator: false,
+        shouldCloseRoom: false,
+        newHostId: this.hostId,
+      };
+    }
+
+    // Game has ended (GAME_OVER) or room is in LOBBY:
+    // Remove the leaving player and any other players who left while the game was running and never returned.
     this.players.splice(idx, 1);
+    this.players = this.players.filter((p) => !p.leftWhileRunning);
 
-    if (wasHost && this.players.length > 0) {
-      const nextHuman = this.players.find((p) => !p.isBot);
-      this.hostId = nextHuman ? nextHuman.id : this.players[0].id;
+    const remainingReal = this.players.filter((p) => !p.isBot);
+
+    if (remainingReal.length === 0) {
+      // Bots will never be hosts; if no real player is remaining, the room will be closed.
+      this.hostId = '';
+      this.touch();
+      return {
+        remaining: 0,
+        remainingRealPlayers: 0,
+        wasHost,
+        wasSpectator: false,
+        shouldCloseRoom: true,
+        newHostId: '',
+      };
+    }
+
+    if (wasHost || !remainingReal.some((p) => p.id === this.hostId)) {
+      const nextHost = remainingReal.find((p) => p.connected !== false) || remainingReal[0];
+      this.hostId = nextHost.id;
     }
 
     this.touch();
-    return { remaining: this.players.length, wasHost, wasSpectator: false };
+    return {
+      remaining: remainingReal.length,
+      remainingRealPlayers: remainingReal.length,
+      wasHost,
+      wasSpectator: false,
+      shouldCloseRoom: false,
+      newHostId: this.hostId,
+    };
+  }
+
+  resetToLobby() {
+    this.started = false;
+    this.game = null;
+    this.lastHitlerCheck = null;
+    this.players = this.players.filter((p) => !p.leftWhileRunning);
+    this.ensureRealPlayerHost();
+    this.touch();
   }
 
   startGame(): { success: boolean; error?: string; nightInfo?: Record<string, NightInfo> } {
@@ -388,7 +553,10 @@ export class Room {
   }
 
   getSummary() {
-    const hostPlayer = this.players.find((p) => p.id === this.hostId) || this.players[0];
+    this.ensureRealPlayerHost();
+    const hostPlayer =
+      this.players.find((p) => p.id === this.hostId && !p.isBot) ||
+      this.players.find((p) => !p.isBot);
     return {
       roomCode: this.code,
       hostName: hostPlayer ? hostPlayer.name : 'Host',
@@ -410,8 +578,19 @@ export class Room {
     };
   }
 
+  getPublicGameState() {
+    if (!this.game) return null;
+    const state = this.game.getPublicState();
+    state.players = state.players.map((p) => ({
+      ...p,
+      isHost: !p.isBot && p.id === this.hostId,
+    }));
+    return state;
+  }
+
   getLiveSnapshot(forPlayerId?: string) {
-    const publicState = this.game ? this.game.getPublicState() : null;
+    this.ensureRealPlayerHost();
+    const publicState = this.getPublicGameState();
     const isPlayer = forPlayerId ? this.players.some((p) => p.id === forPlayerId) : false;
     const isSpec = forPlayerId ? this.spectators.some((s) => s.id === forPlayerId) : false;
 
@@ -851,6 +1030,7 @@ export class Room {
     room.revision = data.revision || 1;
     room.lastHitlerCheck = data.lastHitlerCheck || null;
     room.game = data.game ? GameEngine.fromJSON(data.game) : null;
+    room.ensureRealPlayerHost();
     return room;
   }
 }

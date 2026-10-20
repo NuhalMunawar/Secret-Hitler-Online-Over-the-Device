@@ -10,6 +10,7 @@ import {
   Vote,
 } from '../game/types.js';
 import { sound } from '../utils/sound.js';
+import { PolicyEnactedEvent } from '../components/PolicyEnactmentModal.js';
 
 export interface RoomMember {
   id: string;
@@ -148,6 +149,7 @@ export function useGameSocket() {
   } | null>(null);
   const [chancellorSuspenseCheck, setChancellorSuspenseCheck] =
     useState<HitlerSuspenseCheck | null>(null);
+  const [enactedPolicyEvent, setEnactedPolicyEvent] = useState<PolicyEnactedEvent | null>(null);
 
   // Game over state
   const [gameOverData, setGameOverData] = useState<{
@@ -167,6 +169,8 @@ export function useGameSocket() {
   const playerNameRef = useRef<string>('');
   const lastSeenHitlerCheckIdRef = useRef<string | null>(null);
   const hasShownNightForRoundRef = useRef<boolean>(false);
+  const prevPolicyCountsRef = useRef<{ lib: number; fas: number } | null>(null);
+  const lastEnactedKeyRef = useRef<string | null>(null);
 
   roomCodeRef.current = roomCode;
   playerIdRef.current = playerId;
@@ -220,61 +224,95 @@ export function useGameSocket() {
       setIsPrivateRoom(Boolean(snap.isPrivate));
       setPlayers(snap.players || []);
       setSpectators(snap.spectators || []);
-      setIsHost(Boolean(snap.isHost));
+      const computedIsHost = currentPid
+        ? snap.hostId === currentPid ||
+          (snap.players || []).some((p) => p.id === currentPid && p.isHost)
+        : Boolean(snap.isHost);
+      setIsHost(computedIsHost);
       setIsSpectator(Boolean(snap.isSpectator));
       setGameState(snap.gameState || null);
       setVoteProgress(snap.voteProgress || null);
 
-    if (snap.lastElectionVotes) {
-      setLastElectionVotes(snap.lastElectionVotes);
-    } else if (!snap.gameState) {
-      setLastElectionVotes(null);
-    }
+      if (snap.gameState) {
+        const curLib = snap.gameState.liberalPolicies;
+        const curFas = snap.gameState.fascistPolicies;
+        const prev = prevPolicyCountsRef.current;
+        if (prev && snap.gameState.phase !== 'GAME_OVER') {
+          const key = `${curLib}-${curFas}`;
+          if (curLib > prev.lib && lastEnactedKeyRef.current !== key) {
+            lastEnactedKeyRef.current = key;
+            setEnactedPolicyEvent({
+              policy: 'LIBERAL',
+              slotNumber: curLib,
+              executiveAction: snap.gameState.executiveAction,
+            });
+          } else if (curFas > prev.fas && lastEnactedKeyRef.current !== key) {
+            lastEnactedKeyRef.current = key;
+            setEnactedPolicyEvent({
+              policy: 'FASCIST',
+              slotNumber: curFas,
+              executiveAction: snap.gameState.executiveAction,
+            });
+          }
+        }
+        prevPolicyCountsRef.current = { lib: curLib, fas: curFas };
+      } else {
+        prevPolicyCountsRef.current = null;
+        lastEnactedKeyRef.current = null;
+      }
 
-    if (snap.lastHitlerCheck && snap.lastHitlerCheck.id !== lastSeenHitlerCheckIdRef.current) {
-      lastSeenHitlerCheckIdRef.current = snap.lastHitlerCheck.id;
-      setChancellorSuspenseCheck(snap.lastHitlerCheck.check);
-    } else if (!snap.lastHitlerCheck && !snap.gameState) {
-      lastSeenHitlerCheckIdRef.current = null;
-      setChancellorSuspenseCheck(null);
-    }
+      if (snap.lastElectionVotes) {
+        setLastElectionVotes(snap.lastElectionVotes);
+      } else if (!snap.gameState) {
+        setLastElectionVotes(null);
+      }
 
-    if (snap.gameOverData) {
-      setGameOverData(snap.gameOverData);
-    } else if (!snap.gameState || snap.gameState.phase !== 'GAME_OVER') {
-      setGameOverData(null);
-    }
+      if (snap.lastHitlerCheck && snap.lastHitlerCheck.id !== lastSeenHitlerCheckIdRef.current) {
+        lastSeenHitlerCheckIdRef.current = snap.lastHitlerCheck.id;
+        setChancellorSuspenseCheck(snap.lastHitlerCheck.check);
+      } else if (!snap.lastHitlerCheck && !snap.gameState) {
+        lastSeenHitlerCheckIdRef.current = null;
+        setChancellorSuspenseCheck(null);
+      }
 
-    if (snap.privateState) {
-      if (snap.privateState.nightInfo) {
-        setNightInfo(snap.privateState.nightInfo);
-        if (
-          snap.gameState?.phase === 'NIGHT' &&
-          !snap.isSpectator &&
-          !hasShownNightForRoundRef.current
-        ) {
-          hasShownNightForRoundRef.current = true;
-          setShowNightModal(true);
+      if (snap.gameOverData) {
+        setGameOverData(snap.gameOverData);
+      } else if (!snap.gameState || snap.gameState.phase !== 'GAME_OVER') {
+        setGameOverData(null);
+      }
+
+      if (snap.privateState) {
+        if (snap.privateState.nightInfo) {
+          setNightInfo(snap.privateState.nightInfo);
+          if (
+            snap.gameState?.phase === 'NIGHT' &&
+            !snap.isSpectator &&
+            !hasShownNightForRoundRef.current
+          ) {
+            hasShownNightForRoundRef.current = true;
+            setShowNightModal(true);
+          }
+        }
+        setPresidentCards(snap.privateState.presidentCards || null);
+        setChancellorCards(snap.privateState.chancellorCards || null);
+        setCanVeto(Boolean(snap.privateState.canVeto));
+        setPeekCards(snap.privateState.peekCards || null);
+        if (snap.privateState.investigationResult) {
+          setInvestigationResult(snap.privateState.investigationResult);
         }
       }
-      setPresidentCards(snap.privateState.presidentCards || null);
-      setChancellorCards(snap.privateState.chancellorCards || null);
-      setCanVeto(Boolean(snap.privateState.canVeto));
-      setPeekCards(snap.privateState.peekCards || null);
-      if (snap.privateState.investigationResult) {
-        setInvestigationResult(snap.privateState.investigationResult);
-      }
-    }
 
-    if (!snap.gameState) {
-      hasShownNightForRoundRef.current = false;
-      setNightInfo(null);
-      setPresidentCards(null);
-      setChancellorCards(null);
-      setPeekCards(null);
-      setInvestigationResult(null);
-    }
-  }, [showNotification]);
+      if (!snap.gameState) {
+        hasShownNightForRoundRef.current = false;
+        setNightInfo(null);
+        setPresidentCards(null);
+        setChancellorCards(null);
+        setPeekCards(null);
+        setInvestigationResult(null);
+      }
+    },
+    [showNotification]
+  );
 
   // Fetch public live rooms directory
   const refreshPublicRooms = useCallback(async () => {
@@ -334,16 +372,37 @@ export function useGameSocket() {
           pid ? `?playerId=${encodeURIComponent(pid)}` : ''
         }`;
         const res = await fetch(url);
+        if (res.status === 404) {
+          if (roomCodeRef.current === code) {
+            localStorage.removeItem('sh_room_code');
+            localStorage.removeItem('sh_player_id');
+            roomCodeRef.current = null;
+            playerIdRef.current = null;
+            setRoomCode(null);
+            setIsPrivateRoom(false);
+            setPlayerId(null);
+            setIsHost(false);
+            setIsSpectator(false);
+            setPlayers([]);
+            setSpectators([]);
+            setGameState(null);
+            setGameOverData(null);
+            setChancellorSuspenseCheck(null);
+            setBrowserLiveUrl(null);
+            refreshPublicRooms();
+          }
+          return;
+        }
         if (!res.ok) return;
         const snap: LiveRoomSnapshot = await res.json();
-        if (snap && snap.success) {
+        if (snap && snap.success && roomCodeRef.current === code) {
           applyLiveSnapshot(snap);
         }
       } catch {
         // Ignore transient fetch errors
       }
     },
-    [applyLiveSnapshot]
+    [applyLiveSnapshot, refreshPublicRooms]
   );
 
   // Initial boot: setup socket, check URL /live/:code or localStorage, start polling sync
@@ -383,22 +442,21 @@ export function useGameSocket() {
           const snap: LiveRoomSnapshot = await res.json();
           if (!snap?.success) return;
 
-          // Check if savedId or savedName matches a player/spectator in this room
-          const matchedPlayer = snap.players.find(
-            (p) =>
-              !p.isBot &&
-              ((savedId && p.id === savedId) ||
-                (savedName && p.name.toLowerCase() === savedName.toLowerCase()))
+          // Only auto-reconnect on page reload when savedCode and savedId match an active seat
+          const isSameSavedRoom = Boolean(
+            savedCode && savedCode.toUpperCase() === snap.roomCode.toUpperCase() && savedId
           );
-          const matchedSpec = snap.spectators.find(
-            (s) =>
-              (savedId && s.id === savedId) ||
-              (savedName && s.name.toLowerCase() === savedName.toLowerCase())
-          );
+          const matchedPlayer = isSameSavedRoom
+            ? snap.players.find((p) => !p.isBot && p.id === savedId)
+            : undefined;
+          const matchedSpec = isSameSavedRoom
+            ? snap.spectators.find((s) => s.id === savedId)
+            : undefined;
 
           if (matchedPlayer || matchedSpec) {
             const resolvedId = matchedPlayer ? matchedPlayer.id : matchedSpec!.id;
             const resolvedName = matchedPlayer ? matchedPlayer.name : matchedSpec!.name;
+            const savedPw = localStorage.getItem('sh_player_password') || undefined;
             setRoomCode(snap.roomCode);
             setPlayerId(resolvedId);
             setPlayerName(resolvedName);
@@ -420,11 +478,16 @@ export function useGameSocket() {
             }
 
             if (socket.connected) {
-              socket.emit('reconnect-room', {
-                roomCode: snap.roomCode,
-                playerName: resolvedName,
-                playerId: resolvedId,
-              }, () => {});
+              socket.emit(
+                'reconnect-room',
+                {
+                  roomCode: snap.roomCode,
+                  playerName: resolvedName,
+                  password: savedPw,
+                  playerId: resolvedId,
+                },
+                () => {}
+              );
             }
           } else if (urlCode) {
             // Opened /live/:code on a new device -> show the Live Room Page!
@@ -493,9 +556,38 @@ export function useGameSocket() {
       }
     );
 
-    socket.on('lobby-updated', (data: { players: RoomMember[]; spectators?: Spectator[] }) => {
-      setPlayers(data.players);
-      if (data.spectators) setSpectators(data.spectators);
+    socket.on(
+      'lobby-updated',
+      (data: { players: RoomMember[]; spectators?: Spectator[]; hostId?: string }) => {
+        setPlayers(data.players);
+        if (data.spectators) setSpectators(data.spectators);
+        const myPid = playerIdRef.current;
+        if (myPid) {
+          const isNowHost =
+            data.hostId === myPid ||
+            (data.players || []).some((p) => p.id === myPid && p.isHost);
+          setIsHost(isNowHost);
+        }
+      }
+    );
+
+    socket.on('room-closed', () => {
+      localStorage.removeItem('sh_room_code');
+      localStorage.removeItem('sh_player_id');
+      roomCodeRef.current = null;
+      playerIdRef.current = null;
+      setRoomCode(null);
+      setIsPrivateRoom(false);
+      setPlayerId(null);
+      setIsHost(false);
+      setIsSpectator(false);
+      setPlayers([]);
+      setSpectators([]);
+      setGameState(null);
+      setGameOverData(null);
+      setChancellorSuspenseCheck(null);
+      setBrowserLiveUrl(null);
+      refreshPublicRooms();
     });
 
     socket.on('kicked-from-room', (data: { roomCode?: string; reason?: string }) => {
@@ -583,6 +675,23 @@ export function useGameSocket() {
         }
 
         if (data.chaos) {
+          if (data.chaosPolicy) {
+            const key = `${data.state.liberalPolicies}-${data.state.fascistPolicies}`;
+            lastEnactedKeyRef.current = key;
+            prevPolicyCountsRef.current = {
+              lib: data.state.liberalPolicies,
+              fas: data.state.fascistPolicies,
+            };
+            const slot =
+              data.chaosPolicy === 'LIBERAL'
+                ? data.state.liberalPolicies
+                : data.state.fascistPolicies;
+            setEnactedPolicyEvent({
+              policy: data.chaosPolicy,
+              slotNumber: slot,
+              isChaos: true,
+            });
+          }
           sound.playChaos();
           showNotification(
             `3 Failed Elections — CHAOS! Top policy (${data.chaosPolicy}) enacted!`,
@@ -620,11 +729,21 @@ export function useGameSocket() {
         setGameState(data.state);
         setPresidentCards(null);
         setChancellorCards(null);
-        if (data.policy === 'LIBERAL') {
-          sound.playLiberalPolicy();
-        } else {
-          sound.playFascistPolicy();
-        }
+        const key = `${data.state.liberalPolicies}-${data.state.fascistPolicies}`;
+        lastEnactedKeyRef.current = key;
+        prevPolicyCountsRef.current = {
+          lib: data.state.liberalPolicies,
+          fas: data.state.fascistPolicies,
+        };
+        const slot =
+          data.policy === 'LIBERAL'
+            ? data.state.liberalPolicies
+            : data.state.fascistPolicies;
+        setEnactedPolicyEvent({
+          policy: data.policy,
+          slotNumber: slot,
+          executiveAction: data.executiveAction,
+        });
         if (data.deckReshuffled) {
           setTimeout(() => sound.playCardShuffle(), 500);
         }
@@ -709,21 +828,31 @@ export function useGameSocket() {
       }
     );
 
-    socket.on('game-reset', (data: { players: RoomMember[]; spectators?: Spectator[] }) => {
-      hasShownNightForRoundRef.current = false;
-      setGameState(null);
-      setPlayers(data.players);
-      if (data.spectators) setSpectators(data.spectators);
-      setGameOverData(null);
-      setNightInfo(null);
-      setPresidentCards(null);
-      setChancellorCards(null);
-      setPeekCards(null);
-      setInvestigationResult(null);
-      setChancellorSuspenseCheck(null);
-      sound.playClick();
-      showNotification('Room reset to lobby for a new game.', 'info');
-    });
+    socket.on(
+      'game-reset',
+      (data: { players: RoomMember[]; spectators?: Spectator[]; hostId?: string }) => {
+        hasShownNightForRoundRef.current = false;
+        setGameState(null);
+        setPlayers(data.players);
+        if (data.spectators) setSpectators(data.spectators);
+        const myPid = playerIdRef.current;
+        if (myPid) {
+          const isNowHost =
+            data.hostId === myPid ||
+            (data.players || []).some((p) => p.id === myPid && p.isHost);
+          setIsHost(isNowHost);
+        }
+        setGameOverData(null);
+        setNightInfo(null);
+        setPresidentCards(null);
+        setChancellorCards(null);
+        setPeekCards(null);
+        setInvestigationResult(null);
+        setChancellorSuspenseCheck(null);
+        sound.playClick();
+        showNotification('Room reset to lobby for a new game.', 'info');
+      }
+    );
 
     return () => {
       socket.disconnect();
@@ -788,14 +917,24 @@ export function useGameSocket() {
 
   const createRoom = async (
     name: string,
+    password: string,
     isPrivate = false
   ): Promise<{ success: boolean; error?: string }> => {
     try {
       const cleanName = name.trim() || 'Host';
+      const cleanPassword = (password || '').trim();
+      if (!cleanPassword || cleanPassword.length < 4 || cleanPassword.length > 64) {
+        return { success: false, error: 'Password must be between 4 and 64 characters.' };
+      }
+
       const res = await fetch('/api/live/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ playerName: cleanName, isPrivate: Boolean(isPrivate) }),
+        body: JSON.stringify({
+          playerName: cleanName,
+          password: cleanPassword,
+          isPrivate: Boolean(isPrivate),
+        }),
       });
       const data = await res.json();
       if (!res.ok || !data?.success) {
@@ -813,6 +952,7 @@ export function useGameSocket() {
       setLiveRoomPreview(null);
       localStorage.setItem('sh_room_code', data.roomCode);
       localStorage.setItem('sh_player_name', cleanName);
+      localStorage.setItem('sh_player_password', cleanPassword);
       localStorage.setItem('sh_player_id', data.playerId);
       setBrowserLiveUrl(data.roomCode);
       applyLiveSnapshot(data);
@@ -821,7 +961,7 @@ export function useGameSocket() {
       if (socketRef.current?.connected) {
         socketRef.current.emit(
           'reconnect-room',
-          { roomCode: data.roomCode, playerName: cleanName, playerId: data.playerId },
+          { roomCode: data.roomCode, playerName: cleanName, password: cleanPassword, playerId: data.playerId },
           () => {}
         );
       }
@@ -841,18 +981,26 @@ export function useGameSocket() {
   const joinRoom = async (
     code: string,
     name: string,
+    password?: string,
     claimPlayerId?: string
   ): Promise<{ success: boolean; error?: string }> => {
     try {
       const cleanCode = (code || '').toUpperCase().trim();
       const cleanName = (name || '').trim();
-      const savedId = localStorage.getItem('sh_player_id') || undefined;
+      const cleanPassword = (password || '').trim();
+      const rawSavedId = localStorage.getItem('sh_player_id') || undefined;
+      const rawSavedName = localStorage.getItem('sh_player_name') || '';
+      const savedId =
+        rawSavedId && rawSavedName.toLowerCase() === cleanName.toLowerCase()
+          ? rawSavedId
+          : undefined;
 
       const res = await fetch(`/api/live/${encodeURIComponent(cleanCode)}/join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           playerName: cleanName,
+          password: cleanPassword,
           playerId: savedId,
           claimPlayerId,
         }),
@@ -873,6 +1021,9 @@ export function useGameSocket() {
       setLiveRoomPreview(null);
       localStorage.setItem('sh_room_code', data.roomCode);
       localStorage.setItem('sh_player_name', data.playerName || cleanName);
+      if (cleanPassword) {
+        localStorage.setItem('sh_player_password', cleanPassword);
+      }
       localStorage.setItem('sh_player_id', data.playerId);
       setBrowserLiveUrl(data.roomCode);
       applyLiveSnapshot(data);
@@ -883,6 +1034,7 @@ export function useGameSocket() {
           {
             roomCode: data.roomCode,
             playerName: data.playerName || cleanName,
+            password: cleanPassword,
             playerId: data.playerId,
           },
           () => {}
@@ -904,9 +1056,9 @@ export function useGameSocket() {
 
   const leaveRoom = async () => {
     sound.playClick();
-    if (roomCodeRef.current && playerIdRef.current) {
-      await sendLiveAction('leave-room', {});
-    }
+    const codeToLeave = roomCodeRef.current;
+    const pidToLeave = playerIdRef.current;
+
     localStorage.removeItem('sh_room_code');
     localStorage.removeItem('sh_player_id');
     roomCodeRef.current = null;
@@ -916,12 +1068,26 @@ export function useGameSocket() {
     setPlayerId(null);
     setIsSpectator(false);
     setIsHost(false);
+    setPlayers([]);
+    setSpectators([]);
     setGameState(null);
     setNightInfo(null);
     setGameOverData(null);
     setChancellorSuspenseCheck(null);
     setLiveRoomPreview(null);
     setBrowserLiveUrl(null);
+
+    if (codeToLeave && pidToLeave) {
+      try {
+        await fetch(`/api/live/${encodeURIComponent(codeToLeave)}/action`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'leave-room', playerId: pidToLeave, payload: {} }),
+        });
+      } catch {
+        // Ignore network errors on leave
+      }
+    }
     refreshPublicRooms();
   };
 
@@ -1095,6 +1261,8 @@ export function useGameSocket() {
     lastElectionVotes,
     chancellorSuspenseCheck,
     dismissChancellorSuspense,
+    enactedPolicyEvent,
+    dismissEnactedPolicy: () => setEnactedPolicyEvent(null),
     gameOverData,
     notification,
     eligibleChancellors: gameState?.eligibleChancellors || [],
